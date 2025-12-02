@@ -2,6 +2,14 @@ plugins {
     id("com.android.application") version "8.2.2"
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
+val localProps = Properties()
+rootProject.file("local.properties").let { f ->
+    if (f.exists()) FileInputStream(f).use { localProps.load(it) }
+}
+
 android {
     namespace = "com.spotipass.module"
     compileSdk = 34
@@ -14,9 +22,23 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file(localProps.getProperty("RELEASE_STORE_FILE", ""))
+            storePassword = localProps.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias = localProps.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword = localProps.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

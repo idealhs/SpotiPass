@@ -1,5 +1,6 @@
 Param(
   [string]$OutDir = "$(Split-Path -Parent $PSScriptRoot)\out",
+  [string]$JavaExe,
   [switch]$Force
 )
 
@@ -17,6 +18,13 @@ function Select-File([string]$title, [string]$filter = "APK files (*.apk)|*.apk|
   return $null
 }
 
+# --- Select java.exe ---
+if (-not $JavaExe) {
+  Write-Host "Please select java.exe ..."
+  $JavaExe = Select-File "Select java.exe" "java.exe (java.exe)|java.exe|All files (*.*)|*.*"
+}
+if (-not $JavaExe) { throw "No java.exe selected" }
+
 # --- Select Spotify APK ---
 Write-Host "Please select Spotify APK..."
 $SpotifyApk = Select-File "Select Spotify APK"
@@ -33,6 +41,7 @@ $NPatchJar = Select-File "Select NPatch.jar" "JAR files (*.jar)|*.jar|All files 
 if (-not $NPatchJar) { throw "No NPatch.jar selected" }
 
 Write-Host ""
+Write-Host "Java        : $JavaExe"
 Write-Host "Spotify APK : $SpotifyApk"
 Write-Host "Module APK  : $ModuleApk"
 Write-Host "NPatch JAR  : $NPatchJar"
@@ -43,12 +52,16 @@ Write-Host ""
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # --- Patch ---
-$javaArgs = @("-jar", $NPatchJar, "-m", $ModuleApk, "-l", "2", "-o", $OutDir)
+# NPatch's built-in keystore is in BKS (BouncyCastle) format, which is the default on Android.
+# On desktop JDK the default keystore type is PKCS12, causing "toDerInputStream rejects tag type 0".
+# Fix: NPatchWrapper registers BouncyCastle provider at runtime before calling NPatch.main().
+$wrapperDir = $PSScriptRoot
+$javaArgs = @("-cp", "$NPatchJar;$wrapperDir", "NPatchWrapper", "-m", $ModuleApk, "-l", "2", "-o", $OutDir)
 if ($Force) { $javaArgs += "-f" }
 $javaArgs += @($SpotifyApk)
 
 Write-Host "Patching Spotify with SpotiPass module..."
-Write-Host ("java " + ($javaArgs -join " "))
-& java @javaArgs
+Write-Host ("$JavaExe " + ($javaArgs -join " "))
+& $JavaExe @javaArgs
 
 Write-Host "Done. Output directory: $OutDir"
