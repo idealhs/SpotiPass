@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 蓝色盾牌 -->
+    <path
+        android:fillColor="#1976D2"
+        android:pathData="M54,20 L30,30 L30,55 C30,72 40,84 54,90 C68,84 78,72 78,55 L78,30 Z" />
+    <!-- 白色箭头（向右进入） -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M44,50 L60,50 L55,43 L59,40 L70,54 L59,68 L55,65 L60,58 L44,58 Z" />
+</vector>

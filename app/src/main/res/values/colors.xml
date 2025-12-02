@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#1976D2</color>
+    <color name="primary_dark">#1565C0</color>
+    <color name="accent">#FF9800</color>
+    <color name="status_running">#4CAF50</color>
+    <color name="status_stopped">#F44336</color>
+    <color name="status_bg">#F5F5F5</color>
+    <color name="divider">#E0E0E0</color>
+</resources>

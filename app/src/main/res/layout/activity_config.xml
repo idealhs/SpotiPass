@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="@dimen/activity_padding">
+
+        <TextView
+            android:id="@+id/status_view"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_loading"
+            android:textIsSelectable="true"
+            android:textSize="@dimen/status_text_size"
+            android:background="@color/status_bg"
+            android:padding="@dimen/status_padding"
+            android:layout_marginBottom="@dimen/section_spacing" />
+
+        <CheckBox
+            android:id="@+id/cb_enabled"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/label_enable" />
+
+        <CheckBox
+            android:id="@+id/cb_login_dns_only"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/label_login_dns_only" />
+
+        <EditText
+            android:id="@+id/login_dns_rules_input"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/hint_login_dns_rules"
+            android:inputType="textMultiLine"
+            android:minLines="5"
+            android:maxLines="10"
+            android:layout_marginBottom="@dimen/section_spacing" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_save" />
+
+            <Button
+                android:id="@+id/btn_refresh_status"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/btn_refresh_status" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_view_log"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_view_log" />
+        </LinearLayout>
+
+    </LinearLayout>
+</ScrollView>

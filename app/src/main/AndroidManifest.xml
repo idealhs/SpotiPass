@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application android:label="SpotiPass" android:icon="@mipmap/ic_launcher" android:usesCleartextTraffic="true">
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="SpotiPass - login assist with DNS override and reCAPTCHA rewrite" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+
+        <activity
+            android:name=".SpotiPassConfigActivity"
+            android:exported="true"
+            android:label="SpotiPass"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name=".SpotiPassConfigProvider"
+            android:authorities="com.spotipass.module.config"
+            android:exported="true" />
+    </application>
+
+</manifest>
