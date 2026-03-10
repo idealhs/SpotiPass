@@ -17,6 +17,7 @@ final class SpotiPassPrefs {
         final String loginDnsRules;
         final String loginProxyHost;
         final String loginProxyPort;
+        final boolean loginProxyTls;
         final String loginProxyUsername;
         final String loginProxyPassword;
 
@@ -26,6 +27,7 @@ final class SpotiPassPrefs {
                 String loginDnsRules,
                 String loginProxyHost,
                 String loginProxyPort,
+                boolean loginProxyTls,
                 String loginProxyUsername,
                 String loginProxyPassword
         ) {
@@ -35,6 +37,7 @@ final class SpotiPassPrefs {
             this.loginDnsRules = loginDnsRules;
             this.loginProxyHost = loginProxyHost;
             this.loginProxyPort = loginProxyPort;
+            this.loginProxyTls = loginProxyTls;
             this.loginProxyUsername = loginProxyUsername;
             this.loginProxyPassword = loginProxyPassword;
         }
@@ -77,6 +80,7 @@ final class SpotiPassPrefs {
         String loginDnsRules = prefs.getString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, "");
         String loginProxyHost = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, "");
         String loginProxyPort = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, "");
+        boolean loginProxyTls = prefs.getBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, false);
         String loginProxyUsername = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, "");
         String loginProxyPassword = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, "");
         if (loginDnsRules == null) loginDnsRules = "";
@@ -91,6 +95,7 @@ final class SpotiPassPrefs {
                 loginDnsRules,
                 loginProxyHost,
                 loginProxyPort,
+                loginProxyTls,
                 loginProxyUsername,
                 loginProxyPassword
         );
@@ -102,6 +107,7 @@ final class SpotiPassPrefs {
             String loginDnsRules,
             String loginProxyHost,
             String loginProxyPort,
+            Boolean loginProxyTls,
             String loginProxyUsername,
             String loginProxyPassword
     ) {
@@ -115,6 +121,7 @@ final class SpotiPassPrefs {
         if (loginDnsRules != null) edit.putString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, loginDnsRules);
         if (loginProxyHost != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, loginProxyHost);
         if (loginProxyPort != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, loginProxyPort);
+        if (loginProxyTls != null) edit.putBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, loginProxyTls);
         if (loginProxyUsername != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, loginProxyUsername);
         if (loginProxyPassword != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, loginProxyPassword);
         edit.apply();

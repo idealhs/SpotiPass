@@ -29,7 +29,9 @@ import java.net.InetAddress;
 import java.net.HttpURLConnection;
 import java.net.Proxy;
 import java.net.ProxySelector;
+import java.net.Socket;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
@@ -47,6 +49,11 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+
+import javax.net.SocketFactory;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -77,6 +84,7 @@ public final class SpotiPass {
             "",
             "",
             "",
+            false,
             "",
             ""
     );
@@ -97,13 +105,15 @@ public final class SpotiPass {
     private static final class LoginHttpProxyConfig {
         final String host;
         final int port;
+        final boolean useTlsToProxy;
         final String username;
         final String password;
         final Proxy proxy;
 
-        LoginHttpProxyConfig(String host, int port, String username, String password) {
+        LoginHttpProxyConfig(String host, int port, boolean useTlsToProxy, String username, String password) {
             this.host = host;
             this.port = port;
+            this.useTlsToProxy = useTlsToProxy;
             this.username = username == null ? "" : username;
             this.password = password == null ? "" : password;
             this.proxy = new Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port));
@@ -117,6 +127,14 @@ public final class SpotiPass {
             return host + ":" + port;
         }
 
+        String schemeLabel() {
+            return useTlsToProxy ? "https://" : "http://";
+        }
+
+        String displayTarget() {
+            return schemeLabel() + target();
+        }
+
         String proxyAuthorizationHeader() {
             String userPass = username + ":" + password;
             String encoded = Base64.encodeToString(
@@ -124,6 +142,281 @@ public final class SpotiPass {
                     Base64.NO_WRAP
             );
             return "Basic " + encoded;
+        }
+    }
+
+    private static final class LoginProxyTlsSocketFactory extends SocketFactory {
+        private final SocketFactory delegate;
+
+        LoginProxyTlsSocketFactory(SocketFactory delegate) {
+            this.delegate = delegate == null ? SocketFactory.getDefault() : delegate;
+        }
+
+        @Override
+        public Socket createSocket() throws IOException {
+            return new LoginProxyTlsSocket(delegate);
+        }
+
+        @Override
+        public Socket createSocket(String host, int port) throws IOException {
+            Socket socket = createSocket();
+            socket.connect(new InetSocketAddress(host, port));
+            return socket;
+        }
+
+        @Override
+        public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+            Socket socket = createSocket();
+            socket.bind(new InetSocketAddress(localHost, localPort));
+            socket.connect(new InetSocketAddress(host, port));
+            return socket;
+        }
+
+        @Override
+        public Socket createSocket(InetAddress host, int port) throws IOException {
+            Socket socket = createSocket();
+            socket.connect(new InetSocketAddress(host, port));
+            return socket;
+        }
+
+        @Override
+        public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort) throws IOException {
+            Socket socket = createSocket();
+            socket.bind(new InetSocketAddress(localAddress, localPort));
+            socket.connect(new InetSocketAddress(address, port));
+            return socket;
+        }
+    }
+
+    private static final class LoginProxyTlsSocket extends Socket {
+        private final SocketFactory delegateFactory;
+        private Socket delegateSocket;
+
+        LoginProxyTlsSocket(SocketFactory delegateFactory) throws IOException {
+            this.delegateFactory = delegateFactory == null ? SocketFactory.getDefault() : delegateFactory;
+            this.delegateSocket = this.delegateFactory.createSocket();
+        }
+
+        @Override
+        public void connect(SocketAddress endpoint) throws IOException {
+            connect(endpoint, 0);
+        }
+
+        @Override
+        public synchronized void connect(SocketAddress endpoint, int timeout) throws IOException {
+            if (delegateSocket == null) {
+                delegateSocket = delegateFactory.createSocket();
+            }
+
+            LoginHttpProxyConfig config = getActiveLoginProxyConfig();
+            if (config == null || !config.useTlsToProxy || !isProxyEndpoint(endpoint, config)) {
+                delegateSocket.connect(endpoint, timeout);
+                return;
+            }
+
+            Socket rawSocket = delegateSocket;
+            try {
+                rawSocket.connect(endpoint, timeout);
+                delegateSocket = wrapProxySocketWithTls(rawSocket, config);
+                logLoginProxyOnce("proxyTls|" + config.target(),
+                        "upgrade login proxy connection to TLS for " + config.displayTarget());
+            } catch (IOException e) {
+                try {
+                    rawSocket.close();
+                } catch (Throwable ignored) {
+                }
+                throw e;
+            }
+        }
+
+        @Override
+        public void bind(SocketAddress bindpoint) throws IOException {
+            delegateSocket.bind(bindpoint);
+        }
+
+        @Override
+        public InetAddress getInetAddress() {
+            return delegateSocket.getInetAddress();
+        }
+
+        @Override
+        public InetAddress getLocalAddress() {
+            return delegateSocket.getLocalAddress();
+        }
+
+        @Override
+        public int getPort() {
+            return delegateSocket.getPort();
+        }
+
+        @Override
+        public int getLocalPort() {
+            return delegateSocket.getLocalPort();
+        }
+
+        @Override
+        public SocketAddress getRemoteSocketAddress() {
+            return delegateSocket.getRemoteSocketAddress();
+        }
+
+        @Override
+        public SocketAddress getLocalSocketAddress() {
+            return delegateSocket.getLocalSocketAddress();
+        }
+
+        @Override
+        public java.io.InputStream getInputStream() throws IOException {
+            return delegateSocket.getInputStream();
+        }
+
+        @Override
+        public java.io.OutputStream getOutputStream() throws IOException {
+            return delegateSocket.getOutputStream();
+        }
+
+        @Override
+        public void setTcpNoDelay(boolean on) throws SocketException {
+            delegateSocket.setTcpNoDelay(on);
+        }
+
+        @Override
+        public boolean getTcpNoDelay() throws SocketException {
+            return delegateSocket.getTcpNoDelay();
+        }
+
+        @Override
+        public void setSoLinger(boolean on, int linger) throws SocketException {
+            delegateSocket.setSoLinger(on, linger);
+        }
+
+        @Override
+        public int getSoLinger() throws SocketException {
+            return delegateSocket.getSoLinger();
+        }
+
+        @Override
+        public void sendUrgentData(int data) throws IOException {
+            delegateSocket.sendUrgentData(data);
+        }
+
+        @Override
+        public void setOOBInline(boolean on) throws SocketException {
+            delegateSocket.setOOBInline(on);
+        }
+
+        @Override
+        public boolean getOOBInline() throws SocketException {
+            return delegateSocket.getOOBInline();
+        }
+
+        @Override
+        public synchronized void setSoTimeout(int timeout) throws SocketException {
+            delegateSocket.setSoTimeout(timeout);
+        }
+
+        @Override
+        public synchronized int getSoTimeout() throws SocketException {
+            return delegateSocket.getSoTimeout();
+        }
+
+        @Override
+        public synchronized void setSendBufferSize(int size) throws SocketException {
+            delegateSocket.setSendBufferSize(size);
+        }
+
+        @Override
+        public synchronized int getSendBufferSize() throws SocketException {
+            return delegateSocket.getSendBufferSize();
+        }
+
+        @Override
+        public synchronized void setReceiveBufferSize(int size) throws SocketException {
+            delegateSocket.setReceiveBufferSize(size);
+        }
+
+        @Override
+        public synchronized int getReceiveBufferSize() throws SocketException {
+            return delegateSocket.getReceiveBufferSize();
+        }
+
+        @Override
+        public void setKeepAlive(boolean on) throws SocketException {
+            delegateSocket.setKeepAlive(on);
+        }
+
+        @Override
+        public boolean getKeepAlive() throws SocketException {
+            return delegateSocket.getKeepAlive();
+        }
+
+        @Override
+        public void setTrafficClass(int tc) throws SocketException {
+            delegateSocket.setTrafficClass(tc);
+        }
+
+        @Override
+        public int getTrafficClass() throws SocketException {
+            return delegateSocket.getTrafficClass();
+        }
+
+        @Override
+        public void setReuseAddress(boolean on) throws SocketException {
+            delegateSocket.setReuseAddress(on);
+        }
+
+        @Override
+        public boolean getReuseAddress() throws SocketException {
+            return delegateSocket.getReuseAddress();
+        }
+
+        @Override
+        public synchronized void close() throws IOException {
+            delegateSocket.close();
+        }
+
+        @Override
+        public void shutdownInput() throws IOException {
+            delegateSocket.shutdownInput();
+        }
+
+        @Override
+        public void shutdownOutput() throws IOException {
+            delegateSocket.shutdownOutput();
+        }
+
+        @Override
+        public String toString() {
+            return delegateSocket.toString();
+        }
+
+        @Override
+        public boolean isConnected() {
+            return delegateSocket.isConnected();
+        }
+
+        @Override
+        public boolean isBound() {
+            return delegateSocket.isBound();
+        }
+
+        @Override
+        public boolean isClosed() {
+            return delegateSocket.isClosed();
+        }
+
+        @Override
+        public boolean isInputShutdown() {
+            return delegateSocket.isInputShutdown();
+        }
+
+        @Override
+        public boolean isOutputShutdown() {
+            return delegateSocket.isOutputShutdown();
+        }
+
+        @Override
+        public void setPerformancePreferences(int connectionTime, int latency, int bandwidth) {
+            delegateSocket.setPerformancePreferences(connectionTime, latency, bandwidth);
         }
     }
 
@@ -143,7 +436,7 @@ public final class SpotiPass {
             LoginHttpProxyConfig config = getActiveLoginProxyConfig();
             if (config != null && isSpotifyLoginProxyHost(host)) {
                 logLoginProxyOnce("select|" + host + "|" + config.target(),
-                        "route login host " + host + " via HTTP proxy " + config.target());
+                        "route login host " + host + " via proxy " + config.displayTarget());
                 return Collections.singletonList(config.proxy);
             }
             return delegateSelect(uri);
@@ -237,7 +530,7 @@ public final class SpotiPass {
                         config.proxyAuthorizationHeader()
                 );
                 logLoginProxyOnce("auth|" + host + "|" + config.target(),
-                        "configure proxy authentication for " + host + " via " + config.target());
+                        "configure proxy authentication for " + host + " via " + config.displayTarget());
                 return XposedHelpers.callMethod(requestBuilder, "build");
             } catch (Throwable t) {
                 logLoginProxyOnce("authFailed|" + host + "|" + t.getClass().getName(),
@@ -1416,6 +1709,22 @@ public final class SpotiPass {
                 }
             }
 
+            LoginHttpProxyConfig config = getActiveLoginProxyConfig();
+            if (config != null && config.useTlsToProxy) {
+                SocketFactory existingSocketFactory = readBuilderSocketFactory(builderClass, builder);
+                if (!isLoginProxySocketFactory(existingSocketFactory)) {
+                    boolean socketFactoryInjected = writeBuilderSocketFactory(
+                            builderClass,
+                            builder,
+                            new LoginProxyTlsSocketFactory(existingSocketFactory)
+                    );
+                    if (!socketFactoryInjected) {
+                        logLoginProxyOnce("socketFactoryInjectionFailed",
+                                "unable to inject okhttp login proxy TLS socket factory");
+                    }
+                }
+            }
+
             Class<?> authClass = XposedHelpers.findClassIfExists("okhttp3.Authenticator", cl);
             if (authClass == null) {
                 logLoginProxyOnce("authClassMissing", "okhttp Authenticator class not found");
@@ -1451,6 +1760,12 @@ public final class SpotiPass {
         Field field = findBestFieldByType(builderClass, ProxySelector.class, "proxy");
         Object value = readField(field, builder);
         return value instanceof ProxySelector ? (ProxySelector) value : null;
+    }
+
+    private static SocketFactory readBuilderSocketFactory(Class<?> builderClass, Object builder) {
+        Field field = findBestExactFieldByType(builderClass, SocketFactory.class, "socket");
+        Object value = readField(field, builder);
+        return value instanceof SocketFactory ? (SocketFactory) value : null;
     }
 
     private static Object readBuilderProxyAuthenticator(Class<?> builderClass, Object builder, Class<?> authClass) {
@@ -1501,6 +1816,27 @@ public final class SpotiPass {
             try {
                 field.setAccessible(true);
                 field.set(builder, proxySelector);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private static boolean writeBuilderSocketFactory(Class<?> builderClass, Object builder, SocketFactory socketFactory) {
+        Method setter = findBestSingleArgMethod(builderClass, SocketFactory.class, "socket");
+        if (setter != null) {
+            try {
+                setter.invoke(builder, socketFactory);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        Field field = findBestExactFieldByType(builderClass, SocketFactory.class, "socket");
+        if (field != null) {
+            try {
+                field.setAccessible(true);
+                field.set(builder, socketFactory);
                 return true;
             } catch (Throwable ignored) {
             }
@@ -1583,6 +1919,30 @@ public final class SpotiPass {
         return null;
     }
 
+    private static Field findBestExactFieldByType(Class<?> type, Class<?> fieldType, String preferredNameToken) {
+        if (type == null || fieldType == null) return null;
+        ArrayList<Field> matches = new ArrayList<>();
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                if (field.getType() != fieldType) continue;
+                field.setAccessible(true);
+                matches.add(field);
+            }
+        }
+        if (matches.isEmpty()) return null;
+        if (matches.size() == 1) return matches.get(0);
+
+        String token = preferredNameToken == null ? "" : preferredNameToken.toLowerCase(Locale.US);
+        if (!token.isEmpty()) {
+            for (Field field : matches) {
+                if (field.getName().toLowerCase(Locale.US).contains(token)) {
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
     private static Object readField(Field field, Object target) {
         if (field == null || target == null) return null;
         try {
@@ -1600,6 +1960,10 @@ public final class SpotiPass {
         } catch (Throwable ignored) {
             return false;
         }
+    }
+
+    private static boolean isLoginProxySocketFactory(Object value) {
+        return value instanceof LoginProxyTlsSocketFactory;
     }
 
     private static LoginHttpProxyConfig getActiveLoginProxyConfig() {
@@ -1625,9 +1989,46 @@ public final class SpotiPass {
         return new LoginHttpProxyConfig(
                 host,
                 port,
+                config.loginProxyTls,
                 trimToEmpty(config.loginProxyUsername),
                 config.loginProxyPassword
         );
+    }
+
+    private static boolean isProxyEndpoint(SocketAddress endpoint, LoginHttpProxyConfig config) {
+        if (!(endpoint instanceof InetSocketAddress) || config == null) return false;
+        InetSocketAddress inetSocketAddress = (InetSocketAddress) endpoint;
+        if (inetSocketAddress.getPort() != config.port) return false;
+
+        String configHost = normalizeHost(config.host);
+        String endpointHost = normalizeHost(inetSocketAddress.getHostString());
+        if (configHost != null && configHost.equals(endpointHost)) {
+            return true;
+        }
+
+        InetAddress address = inetSocketAddress.getAddress();
+        if (address == null || configHost == null) return false;
+
+        String hostAddress = normalizeHost(address.getHostAddress());
+        if (configHost.equals(hostAddress)) {
+            return true;
+        }
+
+        String canonicalHost = normalizeHost(address.getCanonicalHostName());
+        return configHost.equals(canonicalHost);
+    }
+
+    private static Socket wrapProxySocketWithTls(Socket rawSocket, LoginHttpProxyConfig config) throws IOException {
+        if (rawSocket == null || config == null || !config.useTlsToProxy) return rawSocket;
+        SSLSocketFactory sslSocketFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket sslSocket = (SSLSocket) sslSocketFactory.createSocket(rawSocket, config.host, config.port, true);
+        sslSocket.setUseClientMode(true);
+        sslSocket.setSoTimeout(rawSocket.getSoTimeout());
+        SSLParameters sslParameters = sslSocket.getSSLParameters();
+        sslParameters.setEndpointIdentificationAlgorithm("HTTPS");
+        sslSocket.setSSLParameters(sslParameters);
+        sslSocket.startHandshake();
+        return sslSocket;
     }
 
     private static int parsePort(String rawPort) {

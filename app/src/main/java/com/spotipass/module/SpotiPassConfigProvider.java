@@ -39,6 +39,7 @@ public final class SpotiPassConfigProvider extends ContentProvider {
             out.putString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, prefs.getString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, ""));
             out.putString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, ""));
             out.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, ""));
+            out.putBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, prefs.getBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, false));
             out.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, ""));
             out.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, ""));
             return out;
@@ -76,6 +77,9 @@ public final class SpotiPassConfigProvider extends ContentProvider {
                 }
                 if (extras.containsKey(SpotiPassKeys.KEY_LOGIN_PROXY_PORT)) {
                     edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, extras.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, ""));
+                }
+                if (extras.containsKey(SpotiPassKeys.KEY_LOGIN_PROXY_TLS)) {
+                    edit.putBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, extras.getBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, false));
                 }
                 if (extras.containsKey(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME)) {
                     edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, extras.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, ""));

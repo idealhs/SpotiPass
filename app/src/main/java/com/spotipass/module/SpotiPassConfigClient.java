@@ -18,6 +18,7 @@ final class SpotiPassConfigClient {
         final String loginDnsRules;
         final String loginProxyHost;
         final String loginProxyPort;
+        final boolean loginProxyTls;
         final String loginProxyUsername;
         final String loginProxyPassword;
 
@@ -27,6 +28,7 @@ final class SpotiPassConfigClient {
                 String loginDnsRules,
                 String loginProxyHost,
                 String loginProxyPort,
+                boolean loginProxyTls,
                 String loginProxyUsername,
                 String loginProxyPassword
         ) {
@@ -36,6 +38,7 @@ final class SpotiPassConfigClient {
             this.loginDnsRules = loginDnsRules;
             this.loginProxyHost = loginProxyHost;
             this.loginProxyPort = loginProxyPort;
+            this.loginProxyTls = loginProxyTls;
             this.loginProxyUsername = loginProxyUsername;
             this.loginProxyPassword = loginProxyPassword;
         }
@@ -49,12 +52,12 @@ final class SpotiPassConfigClient {
 
     static Config get(Context context) {
         if (context == null) {
-            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
+            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", false, "", "");
         }
         try {
             Bundle out = context.getContentResolver().call(URI, METHOD_GET, null, null);
             if (out == null) {
-                return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
+                return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", false, "", "");
             }
             boolean enabled = out.getBoolean(SpotiPassKeys.KEY_ENABLED, false);
             boolean legacyLoginDnsOnly = out.getBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, false);
@@ -65,6 +68,7 @@ final class SpotiPassConfigClient {
             String loginDnsRules = out.getString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, "");
             String loginProxyHost = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, "");
             String loginProxyPort = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, "");
+            boolean loginProxyTls = out.getBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, false);
             String loginProxyUsername = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, "");
             String loginProxyPassword = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, "");
             return new Config(
@@ -73,11 +77,12 @@ final class SpotiPassConfigClient {
                     loginDnsRules == null ? "" : loginDnsRules,
                     loginProxyHost == null ? "" : loginProxyHost,
                     loginProxyPort == null ? "" : loginProxyPort,
+                    loginProxyTls,
                     loginProxyUsername == null ? "" : loginProxyUsername,
                     loginProxyPassword == null ? "" : loginProxyPassword
             );
         } catch (Throwable ignored) {
-            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
+            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", false, "", "");
         }
     }
 
@@ -88,6 +93,7 @@ final class SpotiPassConfigClient {
             String loginDnsRules,
             String loginProxyHost,
             String loginProxyPort,
+            Boolean loginProxyTls,
             String loginProxyUsername,
             String loginProxyPassword
     ) {
@@ -102,6 +108,7 @@ final class SpotiPassConfigClient {
         if (loginDnsRules != null) in.putString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, loginDnsRules);
         if (loginProxyHost != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, loginProxyHost);
         if (loginProxyPort != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, loginProxyPort);
+        if (loginProxyTls != null) in.putBoolean(SpotiPassKeys.KEY_LOGIN_PROXY_TLS, loginProxyTls);
         if (loginProxyUsername != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, loginProxyUsername);
         if (loginProxyPassword != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, loginProxyPassword);
         try {

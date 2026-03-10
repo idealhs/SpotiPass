@@ -13,6 +13,7 @@ final class SpotiPassKeys {
     static final String KEY_LOGIN_DNS_RULES = "login_dns_rules";
     static final String KEY_LOGIN_PROXY_HOST = "login_proxy_host";
     static final String KEY_LOGIN_PROXY_PORT = "login_proxy_port";
+    static final String KEY_LOGIN_PROXY_TLS = "login_proxy_tls";
     static final String KEY_LOGIN_PROXY_USERNAME = "login_proxy_username";
     static final String KEY_LOGIN_PROXY_PASSWORD = "login_proxy_password";
 

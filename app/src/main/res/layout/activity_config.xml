@@ -105,6 +105,12 @@
                 android:hint="@string/hint_login_proxy_port"
                 android:inputType="number" />
 
+            <CheckBox
+                android:id="@+id/cb_login_proxy_tls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_proxy_tls" />
+
             <EditText
                 android:id="@+id/login_proxy_username_input"
                 android:layout_width="match_parent"

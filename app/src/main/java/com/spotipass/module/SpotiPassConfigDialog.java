@@ -131,6 +131,12 @@ final class SpotiPassConfigDialog {
         loginProxyPortInput.setText(config.loginProxyPort);
         proxySection.addView(loginProxyPortInput);
 
+        CheckBox loginProxyTlsBox = new CheckBox(activity);
+        loginProxyTlsBox.setText(activity.getString(R.string.label_login_proxy_tls));
+        loginProxyTlsBox.setTextColor(COLOR_TEXT);
+        loginProxyTlsBox.setChecked(config.loginProxyTls);
+        proxySection.addView(loginProxyTlsBox);
+
         EditText loginProxyUsernameInput = createProxyInput(activity,
                 "\u4ee3\u7406\u7528\u6237\u540d\uff0c\u53ef\u7559\u7a7a",
                 InputType.TYPE_CLASS_TEXT,
@@ -196,6 +202,7 @@ final class SpotiPassConfigDialog {
                     loginDnsRulesInput.getText().toString(),
                     loginProxyHostInput.getText().toString(),
                     loginProxyPortInput.getText().toString(),
+                    loginProxyTlsBox.isChecked(),
                     loginProxyUsernameInput.getText().toString(),
                     loginProxyPasswordInput.getText().toString()
             );
@@ -218,6 +225,7 @@ final class SpotiPassConfigDialog {
             LoginProxyConnectivityTester.testAsync(
                     loginProxyHostInput.getText().toString(),
                     loginProxyPortInput.getText().toString(),
+                    loginProxyTlsBox.isChecked(),
                     loginProxyUsernameInput.getText().toString(),
                     loginProxyPasswordInput.getText().toString(),
                     result -> activity.runOnUiThread(() -> {
@@ -412,7 +420,8 @@ final class SpotiPassConfigDialog {
         String port = config.loginProxyPort == null ? "" : config.loginProxyPort.trim();
         if (host.isEmpty() || port.isEmpty()) return "\u672a\u914d\u7f6e";
         String suffix = hasProxyCredentials(config) ? "\uff08\u542b\u8ba4\u8bc1\uff09" : "";
-        return host + ":" + port + suffix;
+        String scheme = config.loginProxyTls ? "https://" : "http://";
+        return scheme + host + ":" + port + suffix;
     }
 
     private static boolean hasProxyCredentials(SpotiPassPrefs.Config config) {

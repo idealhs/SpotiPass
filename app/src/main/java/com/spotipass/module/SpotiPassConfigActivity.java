@@ -31,6 +31,7 @@ public final class SpotiPassConfigActivity extends Activity {
         EditText loginDnsRulesInput = findViewById(R.id.login_dns_rules_input);
         EditText loginProxyHostInput = findViewById(R.id.login_proxy_host_input);
         EditText loginProxyPortInput = findViewById(R.id.login_proxy_port_input);
+        CheckBox loginProxyTlsBox = findViewById(R.id.cb_login_proxy_tls);
         EditText loginProxyUsernameInput = findViewById(R.id.login_proxy_username_input);
         EditText loginProxyPasswordInput = findViewById(R.id.login_proxy_password_input);
         Button testLoginProxyButton = findViewById(R.id.btn_test_login_proxy);
@@ -44,6 +45,7 @@ public final class SpotiPassConfigActivity extends Activity {
         }
         loginProxyHostInput.setText(config.loginProxyHost);
         loginProxyPortInput.setText(config.loginProxyPort);
+        loginProxyTlsBox.setChecked(config.loginProxyTls);
         loginProxyUsernameInput.setText(config.loginProxyUsername);
         loginProxyPasswordInput.setText(config.loginProxyPassword);
 
@@ -59,6 +61,7 @@ public final class SpotiPassConfigActivity extends Activity {
                     loginDnsRulesInput.getText().toString(),
                     loginProxyHostInput.getText().toString(),
                     loginProxyPortInput.getText().toString(),
+                    loginProxyTlsBox.isChecked(),
                     loginProxyUsernameInput.getText().toString(),
                     loginProxyPasswordInput.getText().toString()
             );
@@ -78,6 +81,7 @@ public final class SpotiPassConfigActivity extends Activity {
             LoginProxyConnectivityTester.testAsync(
                     loginProxyHostInput.getText().toString(),
                     loginProxyPortInput.getText().toString(),
+                    loginProxyTlsBox.isChecked(),
                     loginProxyUsernameInput.getText().toString(),
                     loginProxyPasswordInput.getText().toString(),
                     result -> runOnUiThread(() -> {
@@ -203,7 +207,8 @@ public final class SpotiPassConfigActivity extends Activity {
         String port = config.loginProxyPort == null ? "" : config.loginProxyPort.trim();
         if (host.isEmpty() || port.isEmpty()) return "\u672a\u914d\u7f6e";
         String suffix = hasProxyCredentials(config) ? "\uff08\u542b\u8ba4\u8bc1\uff09" : "";
-        return host + ":" + port + suffix;
+        String scheme = config.loginProxyTls ? "https://" : "http://";
+        return scheme + host + ":" + port + suffix;
     }
 
     private static boolean hasProxyCredentials(SpotiPassConfigClient.Config config) {

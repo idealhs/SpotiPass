@@ -1,17 +1,24 @@
 package com.spotipass.module;
 
-import java.net.HttpURLConnection;
-import java.net.InetSocketAddress;
-import java.net.Proxy;
-import java.net.URL;
+import android.util.Base64;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
-import android.util.Base64;
+import javax.net.ssl.SSLParameters;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.SSLSocketFactory;
 
 final class LoginProxyConnectivityTester {
 
-    private static final String TEST_URL = "https://accounts.spotify.com/";
+    private static final String TARGET_HOST = "accounts.spotify.com";
+    private static final int TARGET_PORT = 443;
     private static final int TIMEOUT_MS = 8000;
 
     interface Callback {
@@ -35,7 +42,7 @@ final class LoginProxyConnectivityTester {
     static Result validate(String host, String portText) {
         String trimmedHost = trimToEmpty(host);
         if (trimmedHost.isEmpty()) {
-            return new Result(false, "代理主机为空", "请填写登录 HTTP 代理主机。");
+            return new Result(false, "代理主机为空", "请填写登录代理主机。");
         }
 
         int port = parsePort(trimToEmpty(portText));
@@ -46,7 +53,7 @@ final class LoginProxyConnectivityTester {
         return null;
     }
 
-    static void testAsync(String host, String portText, String username, String password, Callback callback) {
+    static void testAsync(String host, String portText, boolean useTlsToProxy, String username, String password, Callback callback) {
         Result validation = validate(host, portText);
         if (validation != null) {
             if (callback != null) callback.onResult(validation);
@@ -55,94 +62,176 @@ final class LoginProxyConnectivityTester {
 
         final String trimmedHost = trimToEmpty(host);
         final int port = parsePort(trimToEmpty(portText));
+        final boolean tls = useTlsToProxy;
         final String trimmedUsername = trimToEmpty(username);
         final String safePassword = password == null ? "" : password;
 
         new Thread(() -> {
-            Result result = runProbe(trimmedHost, port, trimmedUsername, safePassword);
+            Result result = runProbe(trimmedHost, port, tls, trimmedUsername, safePassword);
             if (callback != null) {
                 callback.onResult(result);
             }
         }, "spotipass-proxy-test").start();
     }
 
-    private static Result runProbe(String host, int port, String username, String password) {
+    private static Result runProbe(String host, int port, boolean useTlsToProxy, String username, String password) {
         long startedAt = System.nanoTime();
-        HttpURLConnection connection = null;
+        Socket socket = null;
+        BufferedReader reader = null;
         try {
-            Proxy proxy = new Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port));
-            URL url = new URL(TEST_URL);
-            connection = (HttpURLConnection) url.openConnection(proxy);
-            connection.setConnectTimeout(TIMEOUT_MS);
-            connection.setReadTimeout(TIMEOUT_MS);
-            connection.setUseCaches(false);
-            connection.setInstanceFollowRedirects(false);
-            connection.setRequestMethod("GET");
-            connection.setRequestProperty("User-Agent", "SpotiPass-ProxyTester/1.0");
-            connection.setRequestProperty("Accept", "*/*");
-            if (hasCredentials(username, password)) {
-                connection.setRequestProperty("Proxy-Authorization", basicHeader(username, password));
+            socket = new Socket();
+            socket.connect(new java.net.InetSocketAddress(host, port), TIMEOUT_MS);
+            socket.setSoTimeout(TIMEOUT_MS);
+
+            if (useTlsToProxy) {
+                socket = upgradeToTlsProxySocket(socket, host, port);
+                socket.setSoTimeout(TIMEOUT_MS);
             }
 
-            int code = connection.getResponseCode();
+            OutputStream output = socket.getOutputStream();
+            output.write(buildConnectRequest(username, password).getBytes(StandardCharsets.ISO_8859_1));
+            output.flush();
+
+            reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.ISO_8859_1));
+            String statusLine = reader.readLine();
+            if (statusLine == null || statusLine.isEmpty()) {
+                throw new IllegalStateException("proxy returned no response");
+            }
+
+            int responseCode = parseStatusCode(statusLine);
+            List<String> headers = readHeaders(reader);
             long elapsedMs = elapsedMs(startedAt);
-            String message = buildSuccessMessage(host, port, username, password, code, elapsedMs, connection.getHeaderField("Location"));
-            SpotiPassRuntimeLog.append("SpotiPassProxyTest: " + summarizeForLog(host, port, code, elapsedMs));
-            return new Result(true, "已收到 HTTP " + code + " 响应", message);
+
+            if (responseCode == 200) {
+                String message = buildSuccessMessage(host, port, useTlsToProxy, username, password, elapsedMs, statusLine, headers);
+                SpotiPassRuntimeLog.append("SpotiPassProxyTest: " + summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs));
+                return new Result(true, "代理隧道建立成功", message);
+            }
+
+            String message = buildFailureMessage(host, port, useTlsToProxy, username, password, elapsedMs,
+                    "proxy returned " + statusLine, headers);
+            SpotiPassRuntimeLog.append("SpotiPassProxyTest: failed " + summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs));
+            return new Result(false, "代理返回非 200 响应", message);
         } catch (Throwable t) {
             long elapsedMs = elapsedMs(startedAt);
             String reason = t.getClass().getSimpleName() + (t.getMessage() == null ? "" : ": " + t.getMessage());
-            String message = buildFailureMessage(host, port, username, password, elapsedMs, reason);
-            SpotiPassRuntimeLog.append("SpotiPassProxyTest: failed " + host + ":" + port + " after " + elapsedMs + " ms - " + reason);
+            String message = buildFailureMessage(host, port, useTlsToProxy, username, password, elapsedMs, reason, null);
+            SpotiPassRuntimeLog.append("SpotiPassProxyTest: failed " + proxyScheme(useTlsToProxy) + host + ":" + port + " after " + elapsedMs + " ms - " + reason);
             return new Result(false, "代理连接失败", message);
         } finally {
-            if (connection != null) {
+            if (reader != null) {
                 try {
-                    connection.disconnect();
+                    reader.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            if (socket != null) {
+                try {
+                    socket.close();
                 } catch (Throwable ignored) {
                 }
             }
         }
     }
 
-    private static String buildSuccessMessage(String host, int port, String username, String password, int code, long elapsedMs, String location) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("代理：").append(host).append(':').append(port);
-        sb.append('\n');
-        sb.append("认证：").append(hasCredentials(username, password) ? "已配置" : "未配置");
-        sb.append('\n');
-        sb.append("目标：").append(TEST_URL);
-        sb.append('\n');
-        sb.append("HTTP 响应：").append(code);
-        sb.append('\n');
-        sb.append("耗时：").append(elapsedMs).append(" ms");
-        if (location != null && !location.isEmpty()) {
-            sb.append('\n');
-            sb.append("Location：").append(location);
+    private static Socket upgradeToTlsProxySocket(Socket rawSocket, String host, int port) throws Exception {
+        SSLSocketFactory sslSocketFactory = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        SSLSocket sslSocket = (SSLSocket) sslSocketFactory.createSocket(rawSocket, host, port, true);
+        SSLParameters params = sslSocket.getSSLParameters();
+        params.setEndpointIdentificationAlgorithm("HTTPS");
+        sslSocket.setSSLParameters(params);
+        sslSocket.startHandshake();
+        return sslSocket;
+    }
+
+    private static String buildConnectRequest(String username, String password) {
+        StringBuilder request = new StringBuilder();
+        request.append("CONNECT ").append(TARGET_HOST).append(':').append(TARGET_PORT).append(" HTTP/1.1\r\n");
+        request.append("Host: ").append(TARGET_HOST).append(':').append(TARGET_PORT).append("\r\n");
+        request.append("User-Agent: SpotiPass-ProxyTester/1.0\r\n");
+        request.append("Proxy-Connection: Keep-Alive\r\n");
+        if (hasCredentials(username, password)) {
+            request.append("Proxy-Authorization: ").append(basicHeader(username, password)).append("\r\n");
         }
-        sb.append('\n');
-        sb.append("说明：已通过当前代理收到 Spotify 登录域名响应。");
-        return sb.toString();
+        request.append("\r\n");
+        return request.toString();
     }
 
-    private static String buildFailureMessage(String host, int port, String username, String password, long elapsedMs, String reason) {
+    private static int parseStatusCode(String statusLine) {
+        String[] parts = statusLine.trim().split("\\s+");
+        if (parts.length < 2) {
+            throw new IllegalStateException("invalid proxy response: " + statusLine);
+        }
+        return Integer.parseInt(parts[1]);
+    }
+
+    private static List<String> readHeaders(BufferedReader reader) throws Exception {
+        ArrayList<String> headers = new ArrayList<>();
+        while (true) {
+            String line = reader.readLine();
+            if (line == null || line.isEmpty()) break;
+            headers.add(line);
+        }
+        return headers;
+    }
+
+    private static String buildSuccessMessage(
+            String host,
+            int port,
+            boolean useTlsToProxy,
+            String username,
+            String password,
+            long elapsedMs,
+            String statusLine,
+            List<String> headers
+    ) {
         StringBuilder sb = new StringBuilder();
-        sb.append("代理：").append(host).append(':').append(port);
-        sb.append('\n');
-        sb.append("认证：").append(hasCredentials(username, password) ? "已配置" : "未配置");
-        sb.append('\n');
-        sb.append("目标：").append(TEST_URL);
-        sb.append('\n');
-        sb.append("耗时：").append(elapsedMs).append(" ms");
-        sb.append('\n');
-        sb.append("错误：").append(reason);
-        sb.append('\n');
-        sb.append("说明：未能通过当前代理连到 Spotify 登录域名。");
+        sb.append("代理：").append(proxyScheme(useTlsToProxy)).append(host).append(':').append(port).append('\n');
+        sb.append("认证：").append(hasCredentials(username, password) ? "已配置" : "未配置").append('\n');
+        sb.append("目标：").append(TARGET_HOST).append(':').append(TARGET_PORT).append('\n');
+        sb.append("CONNECT 响应：").append(statusLine).append('\n');
+        sb.append("耗时：").append(elapsedMs).append(" ms").append('\n');
+        appendHeaders(sb, headers);
+        sb.append("说明：已通过当前代理成功建立到 Spotify 登录域名的隧道。");
         return sb.toString();
     }
 
-    private static String summarizeForLog(String host, int port, int code, long elapsedMs) {
-        return String.format(Locale.US, "%s:%d -> HTTP %d in %d ms", host, port, code, elapsedMs);
+    private static String buildFailureMessage(
+            String host,
+            int port,
+            boolean useTlsToProxy,
+            String username,
+            String password,
+            long elapsedMs,
+            String reason,
+            List<String> headers
+    ) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("代理：").append(proxyScheme(useTlsToProxy)).append(host).append(':').append(port).append('\n');
+        sb.append("认证：").append(hasCredentials(username, password) ? "已配置" : "未配置").append('\n');
+        sb.append("目标：").append(TARGET_HOST).append(':').append(TARGET_PORT).append('\n');
+        sb.append("耗时：").append(elapsedMs).append(" ms").append('\n');
+        sb.append("错误：").append(reason).append('\n');
+        appendHeaders(sb, headers);
+        sb.append("说明：未能通过当前代理建立到 Spotify 登录域名的隧道。");
+        return sb.toString();
+    }
+
+    private static void appendHeaders(StringBuilder sb, List<String> headers) {
+        if (headers == null || headers.isEmpty()) return;
+        sb.append("代理响应头：").append('\n');
+        for (String header : headers) {
+            sb.append(header).append('\n');
+        }
+    }
+
+    private static String summarizeForLog(String host, int port, boolean useTlsToProxy, int code, long elapsedMs) {
+        return String.format(Locale.US, "%s%s:%d -> CONNECT %d in %d ms",
+                proxyScheme(useTlsToProxy), host, port, code, elapsedMs);
+    }
+
+    private static String proxyScheme(boolean useTlsToProxy) {
+        return useTlsToProxy ? "https://" : "http://";
     }
 
     private static long elapsedMs(long startedAt) {
