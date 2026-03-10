@@ -20,6 +20,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
@@ -75,6 +76,7 @@ public final class SpotiPass {
     private static final String CHALLENGE_HOST = "challenge.spotify.com";
     private static final String RECAPTCHA_GOOGLE_HOST = "www.google.com";
     private static final String RECAPTCHA_NET_HOST = "www.recaptcha.net";
+    private static final String GSTATIC_CN_HOST = "www.gstatic.cn";
     private static final String RECAPTCHA_PATH_PREFIX = "/recaptcha/";
     private static final String CHALLENGE_LAUNCHER_ACTIVITY = "com.spotify.login.adaptiveauthentication.challenge.web.NoAnimLauncherActivity";
     private static final String TWA_FALLBACK_LAUNCH_URL_EXTRA = "com.google.browser.examples.twawebviewfallback.WebViewFallbackActivity.LAUNCH_URL";
@@ -83,7 +85,8 @@ public final class SpotiPass {
             CHALLENGE_HOST,
             RECAPTCHA_GOOGLE_HOST,
             RECAPTCHA_NET_HOST,
-            "www.gstatic.com"
+            "www.gstatic.com",
+            GSTATIC_CN_HOST
     };
 
     private static volatile boolean installed;
@@ -114,8 +117,8 @@ public final class SpotiPass {
     private static volatile Map<String, List<byte[]>> cachedLoginDnsRules = Collections.emptyMap();
     private static final ThreadLocal<Boolean> recaptchaRewriteGuard = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<Boolean> challengeIntentGuard = ThreadLocal.withInitial(() -> Boolean.FALSE);
-    private static final Object webViewProxyRelayLock = new Object();
-    private static volatile WebViewLoginProxyRelay activeWebViewLoginProxyRelay;
+    private static final Object webViewLocalProxyLock = new Object();
+    private static volatile Closeable activeWebViewLocalProxyHandle;
 
     private SpotiPass() {}
 
@@ -165,12 +168,12 @@ public final class SpotiPass {
     private static final class WebViewProxyOverrideState {
         final ProxyConfig proxyConfig;
         final String displayTarget;
-        final WebViewLoginProxyRelay relay;
+        final Closeable localProxyHandle;
 
-        WebViewProxyOverrideState(ProxyConfig proxyConfig, String displayTarget, WebViewLoginProxyRelay relay) {
+        WebViewProxyOverrideState(ProxyConfig proxyConfig, String displayTarget, Closeable localProxyHandle) {
             this.proxyConfig = proxyConfig;
             this.displayTarget = displayTarget;
-            this.relay = relay;
+            this.localProxyHandle = localProxyHandle;
         }
     }
 
@@ -1023,6 +1026,7 @@ public final class SpotiPass {
                 host.endsWith(".spotify.com")
                         || host.endsWith(".google.com")
                         || host.endsWith(".gstatic.com")
+                        || host.endsWith(".gstatic.cn")
                         || "www.recaptcha.net".equals(host);
         if (!related) return;
         String action = intent.getAction();
@@ -1412,18 +1416,27 @@ public final class SpotiPass {
         }
 
         SpotiPassPrefs.Config config = getCachedConfig(appContext);
-        if (config == null || !config.enabled || !SpotiPassKeys.isLoginProxyMode(config.loginMode)) {
+        if (config == null || !config.enabled) {
             webView.loadUrl(url);
             return;
         }
 
-        LoginHttpProxyConfig proxyConfig = getActiveLoginProxyConfig();
-        if (proxyConfig == null) {
-            webView.loadUrl(url);
+        if (SpotiPassKeys.isLoginProxyMode(config.loginMode)) {
+            LoginHttpProxyConfig proxyConfig = getActiveLoginProxyConfig();
+            if (proxyConfig == null) {
+                webView.loadUrl(url);
+                return;
+            }
+            applyWebViewLoginProxyOverride(activity, webView, url, proxyConfig);
             return;
         }
 
-        applyWebViewLoginProxyOverride(activity, webView, url, proxyConfig);
+        if (SpotiPassKeys.isLoginDnsMode(config.loginMode)) {
+            applyWebViewLoginDnsOverride(activity, webView, url, config);
+            return;
+        }
+
+        webView.loadUrl(url);
     }
 
     private static void applyWebViewLoginProxyOverride(Activity activity, WebView webView, String url, LoginHttpProxyConfig config) {
@@ -1441,7 +1454,7 @@ public final class SpotiPass {
             return;
         }
 
-        replaceActiveWebViewLoginProxyRelay(state.relay);
+        replaceActiveWebViewLocalProxyHandle(state.localProxyHandle);
         try {
             ProxyController.getInstance().setProxyOverride(
                     state.proxyConfig,
@@ -1457,26 +1470,63 @@ public final class SpotiPass {
                     }
             );
         } catch (Throwable t) {
-            replaceActiveWebViewLoginProxyRelay(null);
+            replaceActiveWebViewLocalProxyHandle(null);
             log("apply WebView login proxy override failed: " + t);
+            webView.loadUrl(url);
+        }
+    }
+
+    private static void applyWebViewLoginDnsOverride(Activity activity, WebView webView, String url, SpotiPassPrefs.Config config) {
+        if (activity == null || webView == null || url == null || url.isEmpty() || config == null) return;
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            logLoginProxyOnce("webViewDnsProxyUnsupported",
+                    "current WebView implementation does not support proxy override; login WebView DNS mode will remain partial");
+            webView.loadUrl(url);
+            return;
+        }
+
+        WebViewProxyOverrideState state = buildWebViewLoginDnsOverrideState(config);
+        if (state == null || state.proxyConfig == null) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        replaceActiveWebViewLocalProxyHandle(state.localProxyHandle);
+        try {
+            ProxyController.getInstance().setProxyOverride(
+                    state.proxyConfig,
+                    mainThreadExecutor(activity),
+                    () -> {
+                        logRuntime(
+                                "已为登录 WebView 应用 DNS 覆写代理：" + state.displayTarget,
+                                "applied login WebView DNS override proxy: " + state.displayTarget
+                        );
+                        if (!challengeDialogShowing.get()) return;
+                        if (activity.isFinishing() || activity.isDestroyed()) return;
+                        webView.loadUrl(url);
+                    }
+            );
+        } catch (Throwable t) {
+            replaceActiveWebViewLocalProxyHandle(null);
+            log("apply WebView login DNS override failed: " + t);
             webView.loadUrl(url);
         }
     }
 
     private static void clearWebViewLoginProxyOverride(Activity activity, String reason) {
         if (activity == null) {
-            replaceActiveWebViewLoginProxyRelay(null);
+            replaceActiveWebViewLocalProxyHandle(null);
             return;
         }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
-            replaceActiveWebViewLoginProxyRelay(null);
+            replaceActiveWebViewLocalProxyHandle(null);
             return;
         }
         try {
             ProxyController.getInstance().clearProxyOverride(
                     mainThreadExecutor(activity),
                     () -> {
-                        replaceActiveWebViewLoginProxyRelay(null);
+                        replaceActiveWebViewLocalProxyHandle(null);
                         logRuntime(
                                 "已清理登录 WebView 代理覆写（" + reason + "）",
                                 "cleared login WebView proxy override (" + reason + ")"
@@ -1484,7 +1534,7 @@ public final class SpotiPass {
                     }
             );
         } catch (Throwable t) {
-            replaceActiveWebViewLoginProxyRelay(null);
+            replaceActiveWebViewLocalProxyHandle(null);
             logLoginProxyOnce("clearWebViewProxyOverrideFailed|" + t.getClass().getName(),
                     "clear WebView login proxy override failed: " + t);
         }
@@ -1502,9 +1552,45 @@ public final class SpotiPass {
                     authHeader,
                     message -> log(message)
             );
+            ProxyConfig proxyConfig = buildWebViewLoopbackProxyConfig(relay.localProxyRule());
+            if (proxyConfig == null) {
+                closeWebViewLocalProxyHandle(relay);
+                return null;
+            }
+            return new WebViewProxyOverrideState(proxyConfig, relay.describeRoute(), relay);
+        } catch (Throwable t) {
+            closeWebViewLocalProxyHandle(relay);
+            logLoginProxyOnce("buildWebViewLoginProxyConfigFailed|" + t.getClass().getName(),
+                    "build WebView login proxy config failed: " + t);
+            return null;
+        }
+    }
 
+    private static WebViewProxyOverrideState buildWebViewLoginDnsOverrideState(SpotiPassPrefs.Config config) {
+        if (config == null || !SpotiPassKeys.isLoginDnsMode(config.loginMode)) return null;
+        LocalLoginDnsProxyServer server = null;
+        try {
+            Map<String, List<byte[]>> rules = getParsedLoginDnsRules(config.loginDnsRules);
+            server = LocalLoginDnsProxyServer.start(rules, message -> log(message));
+            ProxyConfig proxyConfig = buildWebViewLoopbackProxyConfig(server.localProxyRule());
+            if (proxyConfig == null) {
+                closeWebViewLocalProxyHandle(server);
+                return null;
+            }
+            return new WebViewProxyOverrideState(proxyConfig, server.describeRoute(), server);
+        } catch (Throwable t) {
+            closeWebViewLocalProxyHandle(server);
+            logLoginProxyOnce("buildWebViewLoginDnsProxyConfigFailed|" + t.getClass().getName(),
+                    "build WebView login DNS proxy config failed: " + t);
+            return null;
+        }
+    }
+
+    private static ProxyConfig buildWebViewLoopbackProxyConfig(String proxyRule) {
+        if (proxyRule == null || proxyRule.isEmpty()) return null;
+        try {
             ProxyConfig.Builder builder = new ProxyConfig.Builder();
-            builder.addProxyRule(relay.localProxyRule());
+            builder.addProxyRule(proxyRule);
 
             if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)) {
                 builder.setReverseBypassEnabled(true);
@@ -1515,31 +1601,29 @@ public final class SpotiPass {
                 logLoginProxyOnce("webViewReverseBypassUnsupported",
                         "current WebView implementation does not support reverse bypass; all WebView requests during login will use the proxy");
             }
-
-            return new WebViewProxyOverrideState(builder.build(), relay.describeRoute(), relay);
+            return builder.build();
         } catch (Throwable t) {
-            closeWebViewLoginProxyRelay(relay);
-            logLoginProxyOnce("buildWebViewLoginProxyConfigFailed|" + t.getClass().getName(),
-                    "build WebView login proxy config failed: " + t);
+            logLoginProxyOnce("buildWebViewLoopbackProxyConfigFailed|" + t.getClass().getName(),
+                    "build WebView loopback proxy config failed: " + t);
             return null;
         }
     }
 
-    private static void replaceActiveWebViewLoginProxyRelay(WebViewLoginProxyRelay relay) {
-        WebViewLoginProxyRelay previous;
-        synchronized (webViewProxyRelayLock) {
-            previous = activeWebViewLoginProxyRelay;
-            activeWebViewLoginProxyRelay = relay;
+    private static void replaceActiveWebViewLocalProxyHandle(Closeable handle) {
+        Closeable previous;
+        synchronized (webViewLocalProxyLock) {
+            previous = activeWebViewLocalProxyHandle;
+            activeWebViewLocalProxyHandle = handle;
         }
-        if (previous != relay) {
-            closeWebViewLoginProxyRelay(previous);
+        if (previous != handle) {
+            closeWebViewLocalProxyHandle(previous);
         }
     }
 
-    private static void closeWebViewLoginProxyRelay(WebViewLoginProxyRelay relay) {
-        if (relay == null) return;
+    private static void closeWebViewLocalProxyHandle(Closeable handle) {
+        if (handle == null) return;
         try {
-            relay.close();
+            handle.close();
         } catch (Throwable ignored) {
         }
     }
@@ -2728,6 +2812,7 @@ public final class SpotiPass {
         if (RECAPTCHA_NET_HOST.equals(host)) return true;
         if (RECAPTCHA_GOOGLE_HOST.equals(host)) return true;
         if ("www.gstatic.com".equals(host)) return true;
+        if (GSTATIC_CN_HOST.equals(host)) return true;
         return host.startsWith("accounts-") && host.endsWith(".spotify.com");
     }
 

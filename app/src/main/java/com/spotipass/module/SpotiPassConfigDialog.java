@@ -461,6 +461,7 @@ final class SpotiPassConfigDialog {
                 + "accounts-guc3.spotify.com=35.186.224.31\n"
                 + "accounts-gae2.spotify.com=35.186.224.22\n"
                 + "www.recaptcha.net=120.253.255.98,120.253.250.226\n"
-                + "www.gstatic.com=120.253.253.226,120.253.253.162,120.253.255.34\n";
+                + "www.gstatic.com=120.253.253.226,120.253.253.162,120.253.255.34\n"
+                + "www.gstatic.cn=120.253.253.226,120.253.253.162,120.253.255.34\n";
     }
 }
