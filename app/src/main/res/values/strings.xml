@@ -8,7 +8,7 @@
     <string name="label_login_mode_dns">登录 DNS</string>
     <string name="label_login_mode_proxy">登录代理</string>
     <string name="label_login_dns_rules">登录 DNS 规则</string>
-    <string name="hint_login_dns_rules">登录 DNS 规则，每行：host=ip1,ip2\n示例：accounts.spotify.com=35.186.224.25\n建议包含：challenge.spotify.com / www.recaptcha.net / www.gstatic.com</string>
+    <string name="hint_login_dns_rules">登录 DNS 规则，每行：host=ip1,ip2\n示例：accounts.spotify.com=35.186.224.25\n建议包含：challenge.spotify.com / www.recaptcha.net / www.gstatic.com / www.gstatic.cn</string>
     <string name="label_login_proxy">登录 HTTP 代理</string>
     <string name="hint_login_proxy_host">代理主机，例如 1.2.3.4 或 proxy.example.com</string>
     <string name="hint_login_proxy_port">代理端口，例如 8080</string>

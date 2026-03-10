@@ -6,10 +6,18 @@
 
 ## 实现原理
 
-- DNS 拦截：覆盖 `InetAddress.getByName/getAllByName` 和 `okhttp3.Dns` 系统 DNS
-- 登录 HTTP(S) 代理：对 `accounts.spotify.com`、`challenge.spotify.com`、`auth-callback.spotify.com` 等登录相关域名注入选择性 HTTP CONNECT 代理，支持连接到 HTTP 或 HTTPS 代理服务器，并可配置 Basic 认证；非登录流量保持直连
+- DNS 拦截：覆盖 `InetAddress.getByName/getAllByName` 和 `okhttp3.Dns` 系统 DNS，继续作用于进程内 Java/OkHttp 登录请求
+- 登录 DNS 模式：对应用内登录 WebView 启动本地回环代理，并通过 `WebView Proxy Override` 将登录相关请求导向 `127.0.0.1:随机端口`；本地代理读取 `CONNECT host:port` 后，按配置的 DNS 规则选择目标 IP 建立 TCP 隧道，TLS 仍由 WebView 与目标站点直接完成
+- 登录 HTTP(S) 代理：对 `accounts.spotify.com`、`challenge.spotify.com`、`auth-callback.spotify.com` 等登录相关域名注入选择性 HTTP CONNECT 代理；对于应用内登录 WebView，不再让 Chromium 直接连接上游认证代理，而是先连接本地无认证 relay，再由 relay 转发到配置的 HTTP 或 HTTPS 代理服务器，并按需附带 Basic 认证；非登录流量保持直连
 - reCAPTCHA 重写：将 `www.google.com/recaptcha/*` 替换为 `www.recaptcha.net/recaptcha/*`
 - 登录流拦截：将外部浏览器/CustomTabs 登录页面改为应用内 WebView 展示
+
+### 登录链路策略说明
+
+- `登录 DNS`：仅使用 DNS 替换来实现登录，可能在某些网络情况下不成功，但简单直接，无需代理服务器。
+- `登录代理`：适合你已经有一台可用出海网络的 HTTP(S) 代理服务器，不依赖网络质量。
+- 两种模式都只针对登录相关域名生效。
+- 两种模式都依赖当前设备 WebView 对 `PROXY_OVERRIDE` 的支持，才能让应用内登录 WebView 完整生效；如果 WebView 内核不支持，则 Java/OkHttp 链路仍可能部分生效，但 WebView 登录流无法完整接管。
 
 ## 构建
 
@@ -101,11 +109,11 @@ python .\scripts\build_disguised.py
 2. 打开 Spotify, 将出现 SpotiPass 悬浮窗
 3. 点击悬浮窗，勾选“启用登录辅助”
 4. 根据当前网络情况选择登录链路策略并保存：
-5. 如果使用“登录 DNS”模式，填写 DNS 规则后保存。可配合 `scripts/probe-login-dns.ps1` 生成可用规则。
+5. 如果使用“登录 DNS”模式，填写 DNS 规则后保存。建议至少覆盖 `accounts.spotify.com`、`challenge.spotify.com`、`auth-callback.spotify.com`、`www.recaptcha.net`、`www.gstatic.com`、`www.gstatic.cn`。可配合 `scripts/probe-login-dns.ps1` 生成可用规则。
 6. 如果使用“登录代理”模式，填写代理主机、端口，并按需启用“代理服务器使用 TLS”和用户名/密码；建议先点击“测试登录代理”确认可以成功建立到 `accounts.spotify.com:443` 的 CONNECT 隧道，再保存。
 7. 登录：模块会自动拦截登录流程，在应用内 WebView 中完成登录；其中 Spotify 登录相关域名会按所选策略走 DNS 覆写或 HTTP(S) 代理链路。
 
-注意，不使用登陆代理的情况下，Spotify 的登录请求可能会非常慢，当人机验证结束后，需要耐心等待。
+注意，如果你使用的是 `登录 DNS` 模式，速度和成功率主要取决于你填写的 IP 质量；如果首个 IP 不可达，模块会按配置顺序自动尝试下一个候选 IP，并在日志中记录重试。
 
 ## 其他
 
