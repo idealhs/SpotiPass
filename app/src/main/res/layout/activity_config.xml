@@ -118,6 +118,12 @@
                 android:layout_height="wrap_content"
                 android:hint="@string/hint_login_proxy_password"
                 android:inputType="textPassword" />
+
+            <Button
+                android:id="@+id/btn_test_login_proxy"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_test_login_proxy" />
         </LinearLayout>
 
         <LinearLayout

@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.view.View;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -31,6 +33,7 @@ public final class SpotiPassConfigActivity extends Activity {
         EditText loginProxyPortInput = findViewById(R.id.login_proxy_port_input);
         EditText loginProxyUsernameInput = findViewById(R.id.login_proxy_username_input);
         EditText loginProxyPasswordInput = findViewById(R.id.login_proxy_password_input);
+        Button testLoginProxyButton = findViewById(R.id.btn_test_login_proxy);
 
         enabledBox.setChecked(config.enabled);
         loginModeGroup.check(loginModeToRadioId(config.loginMode));
@@ -65,6 +68,24 @@ public final class SpotiPassConfigActivity extends Activity {
 
         findViewById(R.id.btn_view_log).setOnClickListener(v -> showLog());
         findViewById(R.id.btn_refresh_status).setOnClickListener(v -> refreshStatusAsync(statusView));
+        testLoginProxyButton.setOnClickListener(v -> {
+            if (!SpotiPassKeys.isLoginProxyMode(radioIdToLoginMode(loginModeGroup.getCheckedRadioButtonId()))) {
+                Toast.makeText(this, R.string.toast_proxy_mode_required, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(this, R.string.toast_testing_login_proxy, Toast.LENGTH_SHORT).show();
+            testLoginProxyButton.setEnabled(false);
+            LoginProxyConnectivityTester.testAsync(
+                    loginProxyHostInput.getText().toString(),
+                    loginProxyPortInput.getText().toString(),
+                    loginProxyUsernameInput.getText().toString(),
+                    loginProxyPasswordInput.getText().toString(),
+                    result -> runOnUiThread(() -> {
+                        testLoginProxyButton.setEnabled(true);
+                        showProxyTestResult(result);
+                    })
+            );
+        });
 
         refreshStatusAsync(statusView);
     }
@@ -118,6 +139,25 @@ public final class SpotiPassConfigActivity extends Activity {
                         .show();
             });
         }, "spotipass-config-log").start();
+    }
+
+    private void showProxyTestResult(LoginProxyConnectivityTester.Result result) {
+        if (result == null) return;
+        TextView tv = new TextView(this);
+        tv.setText(result.details);
+        tv.setTextIsSelectable(true);
+        tv.setTextSize(11f);
+        tv.setTypeface(Typeface.MONOSPACE);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+
+        new AlertDialog.Builder(this)
+                .setTitle(result.success ? R.string.dialog_proxy_test_success : R.string.dialog_proxy_test_failed)
+                .setMessage(result.summary)
+                .setView(sv)
+                .setPositiveButton("\u5173\u95ed", null)
+                .show();
     }
 
     private static int countDnsRuleLines(String rules) {

@@ -15,8 +15,13 @@
     <string name="hint_login_proxy_username">代理用户名，可留空</string>
     <string name="hint_login_proxy_password">代理密码，可留空</string>
     <string name="btn_save">保存</string>
+    <string name="btn_test_login_proxy">测试登录代理</string>
     <string name="btn_view_log">查看运行日志</string>
     <string name="btn_refresh_status">刷新状态</string>
     <string name="toast_saved">已保存</string>
+    <string name="toast_testing_login_proxy">正在测试登录代理…</string>
+    <string name="toast_proxy_mode_required">请先切换到登录代理模式</string>
     <string name="dialog_log_title">运行日志（内存缓存）</string>
+    <string name="dialog_proxy_test_success">登录代理测试成功</string>
+    <string name="dialog_proxy_test_failed">登录代理测试失败</string>
 </resources>
