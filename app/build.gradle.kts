@@ -57,6 +57,8 @@ android {
 }
 
 dependencies {
+    implementation("androidx.webkit:webkit:1.15.0")
+
     // 仅编译期依赖，打包时不能把 Xposed API 放进 APK，否则 NPatch/LSPosed 会拒绝加载模块
     compileOnly("de.robv.android.xposed:api:82")
 }

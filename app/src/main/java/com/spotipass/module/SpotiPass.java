@@ -5,12 +5,15 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.util.Base64;
 import android.webkit.CookieManager;
+import android.webkit.HttpAuthHandler;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -47,6 +50,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -54,6 +58,10 @@ import javax.net.SocketFactory;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
+
+import androidx.webkit.ProxyConfig;
+import androidx.webkit.ProxyController;
+import androidx.webkit.WebViewFeature;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -70,6 +78,13 @@ public final class SpotiPass {
     private static final String RECAPTCHA_PATH_PREFIX = "/recaptcha/";
     private static final String CHALLENGE_LAUNCHER_ACTIVITY = "com.spotify.login.adaptiveauthentication.challenge.web.NoAnimLauncherActivity";
     private static final String TWA_FALLBACK_LAUNCH_URL_EXTRA = "com.google.browser.examples.twawebviewfallback.WebViewFallbackActivity.LAUNCH_URL";
+    private static final String[] WEBVIEW_LOGIN_PROXY_REVERSE_BYPASS_RULES = new String[]{
+            "*.spotify.com",
+            CHALLENGE_HOST,
+            RECAPTCHA_GOOGLE_HOST,
+            RECAPTCHA_NET_HOST,
+            "www.gstatic.com"
+    };
 
     private static volatile boolean installed;
 
@@ -99,6 +114,8 @@ public final class SpotiPass {
     private static volatile Map<String, List<byte[]>> cachedLoginDnsRules = Collections.emptyMap();
     private static final ThreadLocal<Boolean> recaptchaRewriteGuard = ThreadLocal.withInitial(() -> Boolean.FALSE);
     private static final ThreadLocal<Boolean> challengeIntentGuard = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final Object webViewProxyRelayLock = new Object();
+    private static volatile WebViewLoginProxyRelay activeWebViewLoginProxyRelay;
 
     private SpotiPass() {}
 
@@ -142,6 +159,18 @@ public final class SpotiPass {
                     Base64.NO_WRAP
             );
             return "Basic " + encoded;
+        }
+    }
+
+    private static final class WebViewProxyOverrideState {
+        final ProxyConfig proxyConfig;
+        final String displayTarget;
+        final WebViewLoginProxyRelay relay;
+
+        WebViewProxyOverrideState(ProxyConfig proxyConfig, String displayTarget, WebViewLoginProxyRelay relay) {
+            this.proxyConfig = proxyConfig;
+            this.displayTarget = displayTarget;
+            this.relay = relay;
         }
     }
 
@@ -438,10 +467,9 @@ public final class SpotiPass {
             String host = normalizeHost(uri.getHost());
             LoginHttpProxyConfig config = getActiveLoginProxyConfig();
             if (config != null && isSpotifyLoginProxyHost(host)) {
-                logLoginProxyRuntimeOnce(
-                        "select|" + host + "|" + config.target(),
-                        "登录请求 " + host + " 通过代理 " + config.displayTarget(),
-                        "login request " + host + " via proxy " + config.displayTarget()
+                logRuntime(
+                        "OkHttp 登录请求 " + uri + " 通过代理 " + config.displayTarget(),
+                        "OkHttp login request " + uri + " via proxy " + config.displayTarget()
                 );
                 return Collections.singletonList(config.proxy);
             }
@@ -555,7 +583,9 @@ public final class SpotiPass {
     }
 
     private static void log(String message) {
-        XposedBridge.log(TAG + ": " + message);
+        String line = TAG + ": " + message;
+        XposedBridge.log(line);
+        SpotiPassRuntimeLog.append(line);
     }
 
     private static void logRuntime(String zhHans, String english) {
@@ -785,7 +815,7 @@ public final class SpotiPass {
 
                         Uri uri = (Uri) param.args[1];
                         String viewUrl = uri.toString();
-                        if (!isLoginFlowUrl(viewUrl)) return;
+                        if (!shouldOpenLoginFlowInWebView(viewUrl)) return;
 
                         Activity activity = resolveChallengeHostActivity(context);
                         if (activity == null) {
@@ -836,6 +866,10 @@ public final class SpotiPass {
                     logChallengeLauncherIntent("challenge-start", intent, viewUrl);
                     if (viewUrl == null || viewUrl.isEmpty()) return;
                     if (!isHttpUrl(viewUrl)) return;
+                    if (isAuthCallbackUrl(viewUrl)) {
+                        log("allow auth callback from challenge launcher: " + viewUrl);
+                        return;
+                    }
                     if (!config.enabled) {
                         log("challenge launcher startActivity skip: config disabled");
                         return;
@@ -897,6 +931,10 @@ public final class SpotiPass {
 
                     String contextClass = context.getClass().getName();
                     boolean fromChallengeLauncher = CHALLENGE_LAUNCHER_ACTIVITY.equals(contextClass);
+                    if (isAuthCallbackUrl(url)) {
+                        log("allow auth callback from challenge bridge: ctx=" + contextClass + ", url=" + url);
+                        return;
+                    }
                     if (!fromChallengeLauncher && !isLoginFlowUrl(url)) return;
 
                     Context appContext = context.getApplicationContext() == null ? context : context.getApplicationContext();
@@ -1121,6 +1159,11 @@ public final class SpotiPass {
         if (challengeUrl == null || challengeUrl.isEmpty()) return;
         if (!isHttpUrl(challengeUrl)) return;
         if (!config.enabled) return;
+        if (isAuthCallbackUrl(challengeUrl)) {
+            log("replay pending auth callback in app: " + challengeUrl);
+            dispatchAuthCallbackIntent(activity, challengeUrl);
+            return;
+        }
         log("replay pending login flow in app: " + challengeUrl);
         showChallengeInApp(activity, challengeUrl);
     }
@@ -1176,8 +1219,16 @@ public final class SpotiPass {
 
     private static boolean shouldHandleLoginFlowIntent(Intent intent, String viewUrl) {
         if (viewUrl == null || viewUrl.isEmpty()) return false;
+        if (isAuthCallbackUrl(viewUrl)) return false;
         if (isLoginFlowUrl(viewUrl)) return true;
-        return isChallengeLauncherIntent(intent);
+        return isChallengeLauncherIntent(intent) && isHttpUrl(viewUrl);
+    }
+
+    private static boolean shouldOpenLoginFlowInWebView(String viewUrl) {
+        if (viewUrl == null || viewUrl.isEmpty()) return false;
+        if (!isHttpUrl(viewUrl)) return false;
+        if (isAuthCallbackUrl(viewUrl)) return false;
+        return isLoginFlowUrl(viewUrl);
     }
 
     private static boolean isChallengeUrl(String url) {
@@ -1238,19 +1289,34 @@ public final class SpotiPass {
             final AlertDialog[] holder = new AlertDialog[1];
             webView.setWebViewClient(new WebViewClient() {
                 @Override
+                public void onPageStarted(WebView view, String url, Bitmap favicon) {
+                    logChallengeWebViewNavigation("page-start", url);
+                    super.onPageStarted(view, url, favicon);
+                }
+
+                @Override
+                public void onPageFinished(WebView view, String url) {
+                    logChallengeWebViewNavigation("page-finish", url);
+                    super.onPageFinished(view, url);
+                }
+
+                @Override
                 public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                     if (request == null || request.getUrl() == null) return false;
+                    logChallengeWebViewRequest("override", request);
                     return handleChallengeNavigation(activity, view, request.getUrl().toString(), holder[0]);
                 }
 
                 @Override
                 public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                    logChallengeWebViewNavigation("override-legacy", url);
                     return handleChallengeNavigation(activity, view, url, holder[0]);
                 }
 
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
                     if (request == null || request.getUrl() == null) return null;
+                    logChallengeWebViewRequest("intercept", request);
                     String original = request.getUrl().toString();
                     String rewritten = maybeRewriteRecaptchaUrlForCurrentConfig(original);
                     if (isSameString(rewritten, original)) return null;
@@ -1259,9 +1325,30 @@ public final class SpotiPass {
 
                 @Override
                 public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+                    logChallengeWebViewNavigation("intercept-legacy", url);
                     String rewritten = maybeRewriteRecaptchaUrlForCurrentConfig(url);
                     if (isSameString(rewritten, url)) return null;
                     return fetchWebResourceViaRewrittenUrl(rewritten, null);
+                }
+
+                @Override
+                public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse errorResponse) {
+                    logChallengeWebViewHttpError(request, errorResponse);
+                    super.onReceivedHttpError(view, request, errorResponse);
+                }
+
+                @Override
+                public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+                    if (handleChallengeWebViewHttpAuthRequest(view, handler, host, realm)) {
+                        return;
+                    }
+                    super.onReceivedHttpAuthRequest(view, handler, host, realm);
+                }
+
+                @Override
+                public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
+                    logChallengeWebViewError(request, error);
+                    super.onReceivedError(view, request, error);
                 }
             });
 
@@ -1279,11 +1366,12 @@ public final class SpotiPass {
                     webView.destroy();
                 } catch (Throwable ignored) {
                 }
+                clearWebViewLoginProxyOverride(activity, "dialog dismissed");
             });
             dialog.show();
 
             String firstUrl = maybeRewriteRecaptchaUrlForCurrentConfig(challengeUrl);
-            webView.loadUrl(firstUrl);
+            loadChallengeUrlInWebView(activity, webView, firstUrl);
         };
 
         if (Looper.myLooper() == Looper.getMainLooper()) {
@@ -1308,6 +1396,338 @@ public final class SpotiPass {
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
         cookieManager.setAcceptThirdPartyCookies(webView, true);
+    }
+
+    private static void loadChallengeUrlInWebView(Activity activity, WebView webView, String url) {
+        if (webView == null || url == null || url.isEmpty()) return;
+        if (activity == null) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        Context appContext = activity.getApplicationContext();
+        if (appContext == null) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        SpotiPassPrefs.Config config = getCachedConfig(appContext);
+        if (config == null || !config.enabled || !SpotiPassKeys.isLoginProxyMode(config.loginMode)) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        LoginHttpProxyConfig proxyConfig = getActiveLoginProxyConfig();
+        if (proxyConfig == null) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        applyWebViewLoginProxyOverride(activity, webView, url, proxyConfig);
+    }
+
+    private static void applyWebViewLoginProxyOverride(Activity activity, WebView webView, String url, LoginHttpProxyConfig config) {
+        if (activity == null || webView == null || url == null || url.isEmpty() || config == null) return;
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            logLoginProxyOnce("webViewProxyUnsupported",
+                    "current WebView implementation does not support proxy override; login WebView requests will remain direct");
+            webView.loadUrl(url);
+            return;
+        }
+
+        WebViewProxyOverrideState state = buildWebViewLoginProxyOverrideState(config);
+        if (state == null || state.proxyConfig == null) {
+            webView.loadUrl(url);
+            return;
+        }
+
+        replaceActiveWebViewLoginProxyRelay(state.relay);
+        try {
+            ProxyController.getInstance().setProxyOverride(
+                    state.proxyConfig,
+                    mainThreadExecutor(activity),
+                    () -> {
+                        logRuntime(
+                                "已为登录 WebView 应用代理覆写：" + state.displayTarget,
+                                "applied login WebView proxy override: " + state.displayTarget
+                        );
+                        if (!challengeDialogShowing.get()) return;
+                        if (activity.isFinishing() || activity.isDestroyed()) return;
+                        webView.loadUrl(url);
+                    }
+            );
+        } catch (Throwable t) {
+            replaceActiveWebViewLoginProxyRelay(null);
+            log("apply WebView login proxy override failed: " + t);
+            webView.loadUrl(url);
+        }
+    }
+
+    private static void clearWebViewLoginProxyOverride(Activity activity, String reason) {
+        if (activity == null) {
+            replaceActiveWebViewLoginProxyRelay(null);
+            return;
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            replaceActiveWebViewLoginProxyRelay(null);
+            return;
+        }
+        try {
+            ProxyController.getInstance().clearProxyOverride(
+                    mainThreadExecutor(activity),
+                    () -> {
+                        replaceActiveWebViewLoginProxyRelay(null);
+                        logRuntime(
+                                "已清理登录 WebView 代理覆写（" + reason + "）",
+                                "cleared login WebView proxy override (" + reason + ")"
+                        );
+                    }
+            );
+        } catch (Throwable t) {
+            replaceActiveWebViewLoginProxyRelay(null);
+            logLoginProxyOnce("clearWebViewProxyOverrideFailed|" + t.getClass().getName(),
+                    "clear WebView login proxy override failed: " + t);
+        }
+    }
+
+    private static WebViewProxyOverrideState buildWebViewLoginProxyOverrideState(LoginHttpProxyConfig config) {
+        if (config == null) return null;
+        WebViewLoginProxyRelay relay = null;
+        try {
+            String authHeader = config.hasCredentials() ? config.proxyAuthorizationHeader() : "";
+            relay = WebViewLoginProxyRelay.start(
+                    config.host,
+                    config.port,
+                    config.useTlsToProxy,
+                    authHeader,
+                    message -> log(message)
+            );
+
+            ProxyConfig.Builder builder = new ProxyConfig.Builder();
+            builder.addProxyRule(relay.localProxyRule());
+
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE_REVERSE_BYPASS)) {
+                builder.setReverseBypassEnabled(true);
+                for (String rule : WEBVIEW_LOGIN_PROXY_REVERSE_BYPASS_RULES) {
+                    builder.addBypassRule(rule);
+                }
+            } else {
+                logLoginProxyOnce("webViewReverseBypassUnsupported",
+                        "current WebView implementation does not support reverse bypass; all WebView requests during login will use the proxy");
+            }
+
+            return new WebViewProxyOverrideState(builder.build(), relay.describeRoute(), relay);
+        } catch (Throwable t) {
+            closeWebViewLoginProxyRelay(relay);
+            logLoginProxyOnce("buildWebViewLoginProxyConfigFailed|" + t.getClass().getName(),
+                    "build WebView login proxy config failed: " + t);
+            return null;
+        }
+    }
+
+    private static void replaceActiveWebViewLoginProxyRelay(WebViewLoginProxyRelay relay) {
+        WebViewLoginProxyRelay previous;
+        synchronized (webViewProxyRelayLock) {
+            previous = activeWebViewLoginProxyRelay;
+            activeWebViewLoginProxyRelay = relay;
+        }
+        if (previous != relay) {
+            closeWebViewLoginProxyRelay(previous);
+        }
+    }
+
+    private static void closeWebViewLoginProxyRelay(WebViewLoginProxyRelay relay) {
+        if (relay == null) return;
+        try {
+            relay.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Executor mainThreadExecutor(Activity activity) {
+        return command -> {
+            if (command == null) return;
+            if (activity == null) {
+                command.run();
+                return;
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                command.run();
+                return;
+            }
+            activity.runOnUiThread(command);
+        };
+    }
+
+    private static void logChallengeWebViewNavigation(String stage, String url) {
+        if (!isHttpUrl(url)) return;
+        logRuntime(
+                "登录 WebView [" + stage + "] " + url,
+                "login WebView [" + stage + "] " + url
+        );
+    }
+
+    private static void logChallengeWebViewRequest(String stage, WebResourceRequest request) {
+        if (request == null || request.getUrl() == null) return;
+        String url = request.getUrl().toString();
+        if (!isHttpUrl(url)) return;
+
+        String method = request.getMethod();
+        boolean mainFrame = request.isForMainFrame();
+        boolean gesture = request.hasGesture();
+        boolean redirect = safeIsRedirect(request);
+        String headers = formatRequestHeadersForLog(request.getRequestHeaders());
+
+        logRuntime(
+                "登录 WebView 请求[" + stage + "] "
+                        + trimToEmpty(method) + " " + url
+                        + ", mainFrame=" + mainFrame
+                        + ", gesture=" + gesture
+                        + ", redirect=" + redirect
+                        + headers,
+                "login WebView request [" + stage + "] "
+                        + trimToEmpty(method) + " " + url
+                        + ", mainFrame=" + mainFrame
+                        + ", gesture=" + gesture
+                        + ", redirect=" + redirect
+                        + headers
+        );
+    }
+
+    private static void logChallengeWebViewHttpError(WebResourceRequest request, WebResourceResponse errorResponse) {
+        if (request == null || request.getUrl() == null || errorResponse == null) return;
+        String url = request.getUrl().toString();
+        if (!isHttpUrl(url)) return;
+        int statusCode = errorResponse.getStatusCode();
+        String reason = trimToEmpty(errorResponse.getReasonPhrase());
+        logRuntime(
+                "登录 WebView HTTP 错误 " + statusCode + " " + reason + " <- " + url,
+                "login WebView HTTP error " + statusCode + " " + reason + " <- " + url
+        );
+    }
+
+    private static boolean handleChallengeWebViewHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+        String normalizedHost = normalizeAuthRequestHost(host);
+        String safeRealm = trimToEmpty(realm);
+        LoginHttpProxyConfig config = getActiveLoginProxyConfig();
+        boolean matchesProxy = isChallengeWebViewProxyAuthHost(normalizedHost, config);
+        boolean hasCredentials = config != null && config.hasCredentials();
+
+        logRuntime(
+                "登录 WebView 认证请求 host=" + trimToEmpty(host)
+                        + ", realm=" + safeRealm
+                        + ", proxyMatch=" + matchesProxy
+                        + ", hasCredentials=" + hasCredentials,
+                "login WebView auth request host=" + trimToEmpty(host)
+                        + ", realm=" + safeRealm
+                        + ", proxyMatch=" + matchesProxy
+                        + ", hasCredentials=" + hasCredentials
+        );
+
+        if (handler == null || config == null || !matchesProxy || !hasCredentials) {
+            return false;
+        }
+
+        try {
+            if (view != null) {
+                view.setHttpAuthUsernamePassword(host, realm, config.username, config.password);
+            }
+            handler.proceed(config.username, config.password);
+            logLoginProxyRuntimeOnce(
+                    "webViewProxyAuth|" + normalizedHost + "|" + safeRealm + "|" + config.target(),
+                    "已为登录 WebView 提交代理认证：" + config.displayTarget()
+                            + (safeRealm.isEmpty() ? "" : "，realm=" + safeRealm),
+                    "submitted login WebView proxy authentication for " + config.displayTarget()
+                            + (safeRealm.isEmpty() ? "" : ", realm=" + safeRealm)
+            );
+            return true;
+        } catch (Throwable t) {
+            logLoginProxyOnce(
+                    "webViewProxyAuthFailed|" + normalizedHost + "|" + t.getClass().getName(),
+                    "login WebView proxy authentication failed for " + trimToEmpty(host) + ": " + t
+            );
+            try {
+                handler.cancel();
+            } catch (Throwable ignored) {
+            }
+            return true;
+        }
+    }
+
+    private static void logChallengeWebViewError(WebResourceRequest request, WebResourceError error) {
+        if (request == null || request.getUrl() == null || error == null) return;
+        String url = request.getUrl().toString();
+        if (!isHttpUrl(url)) return;
+        CharSequence description = error.getDescription();
+        String reason = description == null ? "" : description.toString();
+        logRuntime(
+                "登录 WebView 加载失败 " + error.getErrorCode() + " " + reason + " <- " + url,
+                "login WebView load failed " + error.getErrorCode() + " " + reason + " <- " + url
+        );
+    }
+
+    private static boolean safeIsRedirect(WebResourceRequest request) {
+        if (request == null) return false;
+        try {
+            return request.isRedirect();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static String formatRequestHeadersForLog(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) return ", headers={}";
+        StringBuilder sb = new StringBuilder(", headers={");
+        boolean first = true;
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            if (entry == null || entry.getKey() == null) continue;
+            if (!first) sb.append(", ");
+            first = false;
+
+            String key = entry.getKey();
+            String normalized = key.trim().toLowerCase(Locale.US);
+            String value = entry.getValue();
+            if ("cookie".equals(normalized)
+                    || "authorization".equals(normalized)
+                    || "proxy-authorization".equals(normalized)
+                    || "set-cookie".equals(normalized)) {
+                value = "<redacted>";
+            }
+            sb.append(key).append('=').append(truncateForLog(value, 160));
+        }
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static String truncateForLog(String value, int maxChars) {
+        if (value == null || value.isEmpty()) return "";
+        if (maxChars <= 0 || value.length() <= maxChars) return value;
+        return value.substring(0, maxChars) + "...";
+    }
+
+    private static String normalizeAuthRequestHost(String host) {
+        String normalized = normalizeHost(host);
+        if (normalized == null || normalized.isEmpty()) return normalized;
+        if (normalized.startsWith("[")) {
+            int closing = normalized.indexOf(']');
+            if (closing > 0 && closing < normalized.length() - 1 && normalized.charAt(closing + 1) == ':') {
+                return normalized.substring(0, closing + 1);
+            }
+            return normalized;
+        }
+        int firstColon = normalized.indexOf(':');
+        int lastColon = normalized.lastIndexOf(':');
+        if (firstColon > 0 && firstColon == lastColon) {
+            return normalized.substring(0, firstColon);
+        }
+        return normalized;
+    }
+
+    private static boolean isChallengeWebViewProxyAuthHost(String authHost, LoginHttpProxyConfig config) {
+        if (authHost == null || authHost.isEmpty() || config == null) return false;
+        String configHost = normalizeAuthRequestHost(config.host);
+        if (configHost == null || configHost.isEmpty()) return false;
+        return configHost.equals(authHost);
     }
 
     private static boolean handleChallengeNavigation(Activity activity, WebView view, String url, AlertDialog dialog) {
