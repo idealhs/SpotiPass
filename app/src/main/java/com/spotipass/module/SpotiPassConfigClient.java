@@ -13,17 +13,35 @@ final class SpotiPassConfigClient {
 
     static final class Config {
         final boolean enabled;
+        final String loginMode;
         final boolean loginDnsOnly;
         final String loginDnsRules;
+        final String loginProxyHost;
+        final String loginProxyPort;
+        final String loginProxyUsername;
+        final String loginProxyPassword;
 
         Config(
                 boolean enabled,
-                boolean loginDnsOnly,
-                String loginDnsRules
+                String loginMode,
+                String loginDnsRules,
+                String loginProxyHost,
+                String loginProxyPort,
+                String loginProxyUsername,
+                String loginProxyPassword
         ) {
             this.enabled = enabled;
-            this.loginDnsOnly = loginDnsOnly;
+            this.loginMode = SpotiPassKeys.normalizeLoginMode(loginMode, false);
+            this.loginDnsOnly = SpotiPassKeys.isLoginDnsMode(this.loginMode);
             this.loginDnsRules = loginDnsRules;
+            this.loginProxyHost = loginProxyHost;
+            this.loginProxyPort = loginProxyPort;
+            this.loginProxyUsername = loginProxyUsername;
+            this.loginProxyPassword = loginProxyPassword;
+        }
+
+        boolean isLoginProxyMode() {
+            return SpotiPassKeys.isLoginProxyMode(loginMode);
         }
     }
 
@@ -31,37 +49,61 @@ final class SpotiPassConfigClient {
 
     static Config get(Context context) {
         if (context == null) {
-            return new Config(false, false, "");
+            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
         }
         try {
             Bundle out = context.getContentResolver().call(URI, METHOD_GET, null, null);
             if (out == null) {
-                return new Config(false, false, "");
+                return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
             }
             boolean enabled = out.getBoolean(SpotiPassKeys.KEY_ENABLED, false);
-            boolean loginDnsOnly = out.getBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, false);
+            boolean legacyLoginDnsOnly = out.getBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, false);
+            String loginMode = SpotiPassKeys.normalizeLoginMode(
+                    out.getString(SpotiPassKeys.KEY_LOGIN_MODE, null),
+                    legacyLoginDnsOnly
+            );
             String loginDnsRules = out.getString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, "");
+            String loginProxyHost = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, "");
+            String loginProxyPort = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, "");
+            String loginProxyUsername = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, "");
+            String loginProxyPassword = out.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, "");
             return new Config(
                     enabled,
-                    loginDnsOnly,
-                    loginDnsRules == null ? "" : loginDnsRules
+                    loginMode,
+                    loginDnsRules == null ? "" : loginDnsRules,
+                    loginProxyHost == null ? "" : loginProxyHost,
+                    loginProxyPort == null ? "" : loginProxyPort,
+                    loginProxyUsername == null ? "" : loginProxyUsername,
+                    loginProxyPassword == null ? "" : loginProxyPassword
             );
         } catch (Throwable ignored) {
-            return new Config(false, false, "");
+            return new Config(false, SpotiPassKeys.LOGIN_MODE_NONE, "", "", "", "", "");
         }
     }
 
     static void setConfig(
             Context context,
             Boolean enabled,
-            Boolean loginDnsOnly,
-            String loginDnsRules
+            String loginMode,
+            String loginDnsRules,
+            String loginProxyHost,
+            String loginProxyPort,
+            String loginProxyUsername,
+            String loginProxyPassword
     ) {
         if (context == null) return;
         Bundle in = new Bundle();
         if (enabled != null) in.putBoolean(SpotiPassKeys.KEY_ENABLED, enabled);
-        if (loginDnsOnly != null) in.putBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, loginDnsOnly);
+        if (loginMode != null) {
+            String normalizedMode = SpotiPassKeys.normalizeLoginMode(loginMode, false);
+            in.putString(SpotiPassKeys.KEY_LOGIN_MODE, normalizedMode);
+            in.putBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, SpotiPassKeys.isLoginDnsMode(normalizedMode));
+        }
         if (loginDnsRules != null) in.putString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, loginDnsRules);
+        if (loginProxyHost != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, loginProxyHost);
+        if (loginProxyPort != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, loginProxyPort);
+        if (loginProxyUsername != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, loginProxyUsername);
+        if (loginProxyPassword != null) in.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, loginProxyPassword);
         try {
             context.getContentResolver().call(URI, METHOD_SET, null, in);
         } catch (Throwable ignored) {

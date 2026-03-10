@@ -3,8 +3,17 @@
     <string name="app_name">SpotiPass</string>
     <string name="status_loading">状态：未加载</string>
     <string name="label_enable">启用登录辅助</string>
-    <string name="label_login_dns_only">仅登录 DNS 模式</string>
+    <string name="label_login_mode">登录链路策略</string>
+    <string name="label_login_mode_none">无附加登录链路策略</string>
+    <string name="label_login_mode_dns">登录 DNS</string>
+    <string name="label_login_mode_proxy">登录代理</string>
+    <string name="label_login_dns_rules">登录 DNS 规则</string>
     <string name="hint_login_dns_rules">登录 DNS 规则，每行：host=ip1,ip2\n示例：accounts.spotify.com=35.186.224.25\n建议包含：challenge.spotify.com / www.recaptcha.net / www.gstatic.com</string>
+    <string name="label_login_proxy">登录 HTTP 代理</string>
+    <string name="hint_login_proxy_host">代理主机，例如 1.2.3.4 或 proxy.example.com</string>
+    <string name="hint_login_proxy_port">代理端口，例如 8080</string>
+    <string name="hint_login_proxy_username">代理用户名，可留空</string>
+    <string name="hint_login_proxy_password">代理密码，可留空</string>
     <string name="btn_save">保存</string>
     <string name="btn_view_log">查看运行日志</string>
     <string name="btn_refresh_status">刷新状态</string>

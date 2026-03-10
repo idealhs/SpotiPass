@@ -12,17 +12,35 @@ final class SpotiPassPrefs {
 
     static final class Config {
         final boolean enabled;
+        final String loginMode;
         final boolean loginDnsOnly;
         final String loginDnsRules;
+        final String loginProxyHost;
+        final String loginProxyPort;
+        final String loginProxyUsername;
+        final String loginProxyPassword;
 
         Config(
                 boolean enabled,
-                boolean loginDnsOnly,
-                String loginDnsRules
+                String loginMode,
+                String loginDnsRules,
+                String loginProxyHost,
+                String loginProxyPort,
+                String loginProxyUsername,
+                String loginProxyPassword
         ) {
             this.enabled = enabled;
-            this.loginDnsOnly = loginDnsOnly;
+            this.loginMode = SpotiPassKeys.normalizeLoginMode(loginMode, false);
+            this.loginDnsOnly = SpotiPassKeys.isLoginDnsMode(this.loginMode);
             this.loginDnsRules = loginDnsRules;
+            this.loginProxyHost = loginProxyHost;
+            this.loginProxyPort = loginProxyPort;
+            this.loginProxyUsername = loginProxyUsername;
+            this.loginProxyPassword = loginProxyPassword;
+        }
+
+        boolean isLoginProxyMode() {
+            return SpotiPassKeys.isLoginProxyMode(loginMode);
         }
     }
 
@@ -51,22 +69,54 @@ final class SpotiPassPrefs {
 
     Config getConfig() {
         boolean enabled = prefs.getBoolean(SpotiPassKeys.KEY_ENABLED, false);
-        boolean loginDnsOnly = prefs.getBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, false);
+        boolean legacyLoginDnsOnly = prefs.getBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, false);
+        String loginMode = SpotiPassKeys.normalizeLoginMode(
+                prefs.getString(SpotiPassKeys.KEY_LOGIN_MODE, null),
+                legacyLoginDnsOnly
+        );
         String loginDnsRules = prefs.getString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, "");
+        String loginProxyHost = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, "");
+        String loginProxyPort = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, "");
+        String loginProxyUsername = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, "");
+        String loginProxyPassword = prefs.getString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, "");
         if (loginDnsRules == null) loginDnsRules = "";
+        if (loginProxyHost == null) loginProxyHost = "";
+        if (loginProxyPort == null) loginProxyPort = "";
+        if (loginProxyUsername == null) loginProxyUsername = "";
+        if (loginProxyPassword == null) loginProxyPassword = "";
 
-        return new Config(enabled, loginDnsOnly, loginDnsRules);
+        return new Config(
+                enabled,
+                loginMode,
+                loginDnsRules,
+                loginProxyHost,
+                loginProxyPort,
+                loginProxyUsername,
+                loginProxyPassword
+        );
     }
 
     void putConfig(
             Boolean enabled,
-            Boolean loginDnsOnly,
-            String loginDnsRules
+            String loginMode,
+            String loginDnsRules,
+            String loginProxyHost,
+            String loginProxyPort,
+            String loginProxyUsername,
+            String loginProxyPassword
     ) {
         SharedPreferences.Editor edit = prefs.edit();
         if (enabled != null) edit.putBoolean(SpotiPassKeys.KEY_ENABLED, enabled);
-        if (loginDnsOnly != null) edit.putBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, loginDnsOnly);
+        if (loginMode != null) {
+            String normalizedMode = SpotiPassKeys.normalizeLoginMode(loginMode, false);
+            edit.putString(SpotiPassKeys.KEY_LOGIN_MODE, normalizedMode);
+            edit.putBoolean(SpotiPassKeys.KEY_LOGIN_DNS_ONLY, SpotiPassKeys.isLoginDnsMode(normalizedMode));
+        }
         if (loginDnsRules != null) edit.putString(SpotiPassKeys.KEY_LOGIN_DNS_RULES, loginDnsRules);
+        if (loginProxyHost != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_HOST, loginProxyHost);
+        if (loginProxyPort != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PORT, loginProxyPort);
+        if (loginProxyUsername != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_USERNAME, loginProxyUsername);
+        if (loginProxyPassword != null) edit.putString(SpotiPassKeys.KEY_LOGIN_PROXY_PASSWORD, loginProxyPassword);
         edit.apply();
         notifyChanged();
     }

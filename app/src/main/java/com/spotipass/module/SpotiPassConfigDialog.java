@@ -11,6 +11,8 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -62,11 +64,28 @@ final class SpotiPassConfigDialog {
         cbEnabled.setChecked(config.enabled);
         root.addView(cbEnabled);
 
-        CheckBox cbLoginDnsOnly = new CheckBox(activity);
-        cbLoginDnsOnly.setText("\u4ec5\u767b\u5f55 DNS \u6a21\u5f0f");
-        cbLoginDnsOnly.setTextColor(COLOR_TEXT);
-        cbLoginDnsOnly.setChecked(config.loginDnsOnly);
-        root.addView(cbLoginDnsOnly);
+        TextView modeLabel = new TextView(activity);
+        modeLabel.setText("\u767b\u5f55\u94fe\u8def\u7b56\u7565");
+        modeLabel.setTextColor(COLOR_TEXT);
+        root.addView(modeLabel);
+
+        RadioGroup loginModeGroup = new RadioGroup(activity);
+        loginModeGroup.setOrientation(LinearLayout.VERTICAL);
+        RadioButton rbNone = createModeRadio(activity, "\u65e0\u9644\u52a0\u767b\u5f55\u94fe\u8def\u7b56\u7565");
+        RadioButton rbDns = createModeRadio(activity, "\u767b\u5f55 DNS");
+        RadioButton rbProxy = createModeRadio(activity, "\u767b\u5f55\u4ee3\u7406");
+        loginModeGroup.addView(rbNone);
+        loginModeGroup.addView(rbDns);
+        loginModeGroup.addView(rbProxy);
+        root.addView(loginModeGroup);
+
+        LinearLayout dnsSection = new LinearLayout(activity);
+        dnsSection.setOrientation(LinearLayout.VERTICAL);
+
+        TextView dnsLabel = new TextView(activity);
+        dnsLabel.setText("\u767b\u5f55 DNS \u89c4\u5219");
+        dnsLabel.setTextColor(COLOR_TEXT);
+        dnsSection.addView(dnsLabel);
 
         EditText loginDnsRulesInput = new EditText(activity);
         loginDnsRulesInput.setHint("\u6bcf\u884c\u683c\u5f0f\uff1ahost=ip1,ip2");
@@ -86,8 +105,57 @@ final class SpotiPassConfigDialog {
         rulesInputBg.setCornerRadius(4 * density);
         loginDnsRulesInput.setBackground(rulesInputBg);
         loginDnsRulesInput.setPadding(smallPad, smallPad, smallPad, smallPad);
-        root.addView(loginDnsRulesInput, new LinearLayout.LayoutParams(
+        dnsSection.addView(loginDnsRulesInput, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        root.addView(dnsSection);
+
+        LinearLayout proxySection = new LinearLayout(activity);
+        proxySection.setOrientation(LinearLayout.VERTICAL);
+
+        TextView proxyLabel = new TextView(activity);
+        proxyLabel.setText("\u767b\u5f55 HTTP \u4ee3\u7406");
+        proxyLabel.setTextColor(COLOR_TEXT);
+        proxySection.addView(proxyLabel);
+
+        EditText loginProxyHostInput = createProxyInput(activity,
+                "\u4ee3\u7406\u4e3b\u673a\uff0c\u4f8b\u5982 1.2.3.4 \u6216 proxy.example.com",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI,
+                density, smallPad);
+        loginProxyHostInput.setText(config.loginProxyHost);
+        proxySection.addView(loginProxyHostInput);
+
+        EditText loginProxyPortInput = createProxyInput(activity,
+                "\u4ee3\u7406\u7aef\u53e3\uff0c\u4f8b\u5982 8080",
+                InputType.TYPE_CLASS_NUMBER,
+                density, smallPad);
+        loginProxyPortInput.setText(config.loginProxyPort);
+        proxySection.addView(loginProxyPortInput);
+
+        EditText loginProxyUsernameInput = createProxyInput(activity,
+                "\u4ee3\u7406\u7528\u6237\u540d\uff0c\u53ef\u7559\u7a7a",
+                InputType.TYPE_CLASS_TEXT,
+                density, smallPad);
+        loginProxyUsernameInput.setText(config.loginProxyUsername);
+        proxySection.addView(loginProxyUsernameInput);
+
+        EditText loginProxyPasswordInput = createProxyInput(activity,
+                "\u4ee3\u7406\u5bc6\u7801\uff0c\u53ef\u7559\u7a7a",
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD,
+                density, smallPad);
+        loginProxyPasswordInput.setText(config.loginProxyPassword);
+        proxySection.addView(loginProxyPasswordInput);
+        root.addView(proxySection);
+
+        if (SpotiPassKeys.isLoginDnsMode(config.loginMode)) {
+            rbDns.setChecked(true);
+        } else if (SpotiPassKeys.isLoginProxyMode(config.loginMode)) {
+            rbProxy.setChecked(true);
+        } else {
+            rbNone.setChecked(true);
+        }
+        loginModeGroup.setOnCheckedChangeListener((group, checkedId) ->
+                updateLoginModeSections(dnsSection, proxySection, checkedId == rbDns.getId(), checkedId == rbProxy.getId()));
+        updateLoginModeSections(dnsSection, proxySection, rbDns.isChecked(), rbProxy.isChecked());
 
         addSpacer(root, smallPad);
 
@@ -120,8 +188,12 @@ final class SpotiPassConfigDialog {
         btnSave.setOnClickListener(v -> {
             prefs.putConfig(
                     cbEnabled.isChecked(),
-                    cbLoginDnsOnly.isChecked(),
-                    loginDnsRulesInput.getText().toString()
+                    radioIdToLoginMode(rbNone, rbDns, rbProxy, loginModeGroup.getCheckedRadioButtonId()),
+                    loginDnsRulesInput.getText().toString(),
+                    loginProxyHostInput.getText().toString(),
+                    loginProxyPortInput.getText().toString(),
+                    loginProxyUsernameInput.getText().toString(),
+                    loginProxyPasswordInput.getText().toString()
             );
             Toast.makeText(activity, "\u5df2\u4fdd\u5b58", Toast.LENGTH_SHORT).show();
             refreshStatusAsync(activity, prefs, statusView);
@@ -173,8 +245,9 @@ final class SpotiPassConfigDialog {
         SpotiPassPrefs.Config config = prefs.getConfig();
         StringBuilder sb = new StringBuilder();
         sb.append("\u767b\u5f55\u8f85\u52a9\uff1a").append(config.enabled ? "\u5df2\u542f\u7528" : "\u672a\u542f\u7528").append('\n');
-        sb.append("\u6a21\u5f0f\uff1a").append(config.loginDnsOnly ? "\u4ec5\u767b\u5f55 DNS" : "\u517c\u5bb9\u6a21\u5f0f").append('\n');
+        sb.append("\u6a21\u5f0f\uff1a").append(loginModeLabel(config.loginMode)).append('\n');
         sb.append("DNS \u89c4\u5219\uff1a").append(countDnsRuleLines(config.loginDnsRules)).append(" \u6761").append('\n');
+        sb.append("\u767b\u5f55\u4ee3\u7406\uff1a").append(formatLoginProxyTarget(config)).append('\n');
         sb.append("\u8fd0\u884c\u65e5\u5fd7\u7f13\u5b58\uff1a").append(SpotiPassRuntimeLog.length()).append(" \u5b57\u7b26").append('\n');
         sb.append("\u8bf4\u660e\uff1a\u65e5\u5fd7\u6765\u81ea\u6a21\u5757\u8fd0\u884c\u65f6\u5185\u5b58\uff0c\u4e0d\u4f9d\u8d56 NPatch \u6587\u4ef6\u65e5\u5fd7\u3002");
         return sb.toString();
@@ -242,6 +315,60 @@ final class SpotiPassConfigDialog {
         android.view.View spacer = new android.view.View(parent.getContext());
         parent.addView(spacer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, heightPx));
+    }
+
+    private static RadioButton createModeRadio(Activity activity, String text) {
+        RadioButton radio = new RadioButton(activity);
+        radio.setId(android.view.View.generateViewId());
+        radio.setText(text);
+        radio.setTextColor(COLOR_TEXT);
+        return radio;
+    }
+
+    private static EditText createProxyInput(Activity activity, String hint, int inputType, float density, int smallPad) {
+        EditText input = new EditText(activity);
+        input.setHint(hint);
+        input.setHintTextColor(Color.parseColor("#999999"));
+        input.setTextColor(COLOR_TEXT);
+        input.setInputType(inputType);
+        GradientDrawable inputBg = new GradientDrawable();
+        inputBg.setColor(COLOR_INPUT_BG);
+        inputBg.setStroke((int) (1 * density), COLOR_INPUT_BORDER);
+        inputBg.setCornerRadius(4 * density);
+        input.setBackground(inputBg);
+        input.setPadding(smallPad, smallPad, smallPad, smallPad);
+        return input;
+    }
+
+    private static void updateLoginModeSections(LinearLayout dnsSection, LinearLayout proxySection, boolean showDns, boolean showProxy) {
+        dnsSection.setVisibility(showDns ? LinearLayout.VISIBLE : LinearLayout.GONE);
+        proxySection.setVisibility(showProxy ? LinearLayout.VISIBLE : LinearLayout.GONE);
+    }
+
+    private static String radioIdToLoginMode(RadioButton rbNone, RadioButton rbDns, RadioButton rbProxy, int checkedId) {
+        if (checkedId == rbDns.getId()) return SpotiPassKeys.LOGIN_MODE_DNS;
+        if (checkedId == rbProxy.getId()) return SpotiPassKeys.LOGIN_MODE_PROXY;
+        return SpotiPassKeys.LOGIN_MODE_NONE;
+    }
+
+    private static String loginModeLabel(String loginMode) {
+        if (SpotiPassKeys.isLoginDnsMode(loginMode)) return "\u767b\u5f55 DNS";
+        if (SpotiPassKeys.isLoginProxyMode(loginMode)) return "\u767b\u5f55\u4ee3\u7406";
+        return "\u65e0";
+    }
+
+    private static String formatLoginProxyTarget(SpotiPassPrefs.Config config) {
+        String host = config.loginProxyHost == null ? "" : config.loginProxyHost.trim();
+        String port = config.loginProxyPort == null ? "" : config.loginProxyPort.trim();
+        if (host.isEmpty() || port.isEmpty()) return "\u672a\u914d\u7f6e";
+        String suffix = hasProxyCredentials(config) ? "\uff08\u542b\u8ba4\u8bc1\uff09" : "";
+        return host + ":" + port + suffix;
+    }
+
+    private static boolean hasProxyCredentials(SpotiPassPrefs.Config config) {
+        String username = config.loginProxyUsername == null ? "" : config.loginProxyUsername.trim();
+        String password = config.loginProxyPassword == null ? "" : config.loginProxyPassword;
+        return !username.isEmpty() || !password.isEmpty();
     }
 
     private static int countDnsRuleLines(String rules) {

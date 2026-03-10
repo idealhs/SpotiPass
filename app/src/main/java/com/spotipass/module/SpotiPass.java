@@ -9,6 +9,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
+import android.util.Base64;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
@@ -16,15 +17,24 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.IOException;
 import java.io.InputStream;
 import java.lang.ref.WeakReference;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.net.InetSocketAddress;
 import java.net.InetAddress;
 import java.net.HttpURLConnection;
+import java.net.Proxy;
+import java.net.ProxySelector;
+import java.net.SocketAddress;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLConnection;
 import java.net.UnknownHostException;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -61,9 +71,18 @@ public final class SpotiPass {
     private static final AtomicBoolean firstLaunchDialogShown = new AtomicBoolean(false);
     private static volatile WeakReference<Activity> lastTargetActivity = new WeakReference<>(null);
     private static volatile WeakReference<Activity> lastStableTargetActivity = new WeakReference<>(null);
-    private static volatile SpotiPassPrefs.Config cachedConfig = new SpotiPassPrefs.Config(false, false, "");
+    private static volatile SpotiPassPrefs.Config cachedConfig = new SpotiPassPrefs.Config(
+            false,
+            SpotiPassKeys.LOGIN_MODE_NONE,
+            "",
+            "",
+            "",
+            "",
+            ""
+    );
 
     private static final Set<String> loggedDnsHosts = ConcurrentHashMap.newKeySet();
+    private static final Set<String> loggedLoginProxyKeys = ConcurrentHashMap.newKeySet();
     private static final Set<String> loggedRecaptchaRewritePaths = ConcurrentHashMap.newKeySet();
     private static final Set<String> loggedViewIntentKeys = ConcurrentHashMap.newKeySet();
     private static final AtomicBoolean challengeDialogShowing = new AtomicBoolean(false);
@@ -74,6 +93,164 @@ public final class SpotiPass {
     private static final ThreadLocal<Boolean> challengeIntentGuard = ThreadLocal.withInitial(() -> Boolean.FALSE);
 
     private SpotiPass() {}
+
+    private static final class LoginHttpProxyConfig {
+        final String host;
+        final int port;
+        final String username;
+        final String password;
+        final Proxy proxy;
+
+        LoginHttpProxyConfig(String host, int port, String username, String password) {
+            this.host = host;
+            this.port = port;
+            this.username = username == null ? "" : username;
+            this.password = password == null ? "" : password;
+            this.proxy = new Proxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved(host, port));
+        }
+
+        boolean hasCredentials() {
+            return !username.isEmpty() || !password.isEmpty();
+        }
+
+        String target() {
+            return host + ":" + port;
+        }
+
+        String proxyAuthorizationHeader() {
+            String userPass = username + ":" + password;
+            String encoded = Base64.encodeToString(
+                    userPass.getBytes(StandardCharsets.ISO_8859_1),
+                    Base64.NO_WRAP
+            );
+            return "Basic " + encoded;
+        }
+    }
+
+    private static final class LoginProxySelector extends ProxySelector {
+        private final ProxySelector delegate;
+
+        LoginProxySelector(ProxySelector delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public List<Proxy> select(URI uri) {
+            if (uri == null) {
+                return delegateSelect(uri);
+            }
+            String host = normalizeHost(uri.getHost());
+            LoginHttpProxyConfig config = getActiveLoginProxyConfig();
+            if (config != null && isSpotifyLoginProxyHost(host)) {
+                logLoginProxyOnce("select|" + host + "|" + config.target(),
+                        "route login host " + host + " via HTTP proxy " + config.target());
+                return Collections.singletonList(config.proxy);
+            }
+            return delegateSelect(uri);
+        }
+
+        @Override
+        public void connectFailed(URI uri, SocketAddress sa, IOException ioe) {
+            String host = uri == null ? "" : normalizeHost(uri.getHost());
+            if (isSpotifyLoginProxyHost(host)) {
+                String reason = ioe == null ? "" : ioe.getClass().getSimpleName() + ":" + ioe.getMessage();
+                logLoginProxyOnce("connectFailed|" + host + "|" + reason,
+                        "login proxy connect failed for " + host + ": " + reason);
+            }
+            if (delegate != null) {
+                try {
+                    delegate.connectFailed(uri, sa, ioe);
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+
+        private List<Proxy> delegateSelect(URI uri) {
+            if (delegate != null) {
+                try {
+                    List<Proxy> selected = delegate.select(uri);
+                    if (selected != null && !selected.isEmpty()) {
+                        return selected;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            return Collections.singletonList(Proxy.NO_PROXY);
+        }
+    }
+
+    private static final class LoginProxyAuthenticatorHandler implements InvocationHandler {
+        private final Object delegate;
+
+        LoginProxyAuthenticatorHandler(Object delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            String name = method.getName();
+            if ("toString".equals(name) && (args == null || args.length == 0)) {
+                return "LoginProxyAuthenticator(" + delegate + ")";
+            }
+            if ("hashCode".equals(name) && (args == null || args.length == 0)) {
+                return System.identityHashCode(proxy);
+            }
+            if ("equals".equals(name) && args != null && args.length == 1) {
+                return proxy == args[0];
+            }
+            if (!"authenticate".equals(name) || args == null || args.length < 2) {
+                return invokeDelegate(method, args);
+            }
+
+            Object response = args[1];
+            String host = extractRequestHostFromResponse(response);
+            if (!isSpotifyLoginProxyHost(host)) {
+                return invokeDelegate(method, args);
+            }
+
+            LoginHttpProxyConfig config = getActiveLoginProxyConfig();
+            if (config == null || !config.hasCredentials()) {
+                return invokeDelegate(method, args);
+            }
+
+            int responseCode = extractResponseCode(response);
+            if (responseCode != 407) {
+                return invokeDelegate(method, args);
+            }
+
+            Object request = getRequestFromResponse(response);
+            if (request == null) {
+                return invokeDelegate(method, args);
+            }
+
+            String existingHeader = getRequestHeader(request, "Proxy-Authorization");
+            if (existingHeader != null && !existingHeader.isEmpty()) {
+                return null;
+            }
+
+            try {
+                Object requestBuilder = XposedHelpers.callMethod(request, "newBuilder");
+                XposedHelpers.callMethod(
+                        requestBuilder,
+                        "header",
+                        "Proxy-Authorization",
+                        config.proxyAuthorizationHeader()
+                );
+                logLoginProxyOnce("auth|" + host + "|" + config.target(),
+                        "configure proxy authentication for " + host + " via " + config.target());
+                return XposedHelpers.callMethod(requestBuilder, "build");
+            } catch (Throwable t) {
+                logLoginProxyOnce("authFailed|" + host + "|" + t.getClass().getName(),
+                        "login proxy authenticator failed for " + host + ": " + t);
+                return invokeDelegate(method, args);
+            }
+        }
+
+        private Object invokeDelegate(Method method, Object[] args) throws Throwable {
+            if (delegate == null) return null;
+            return method.invoke(delegate, args);
+        }
+    }
 
     private static void log(String message) {
         String line = TAG + ": " + message;
@@ -99,6 +276,7 @@ public final class SpotiPass {
         hookUrlOpenConnection();
         hookRecaptchaUrlRewrite(appClassLoader);
         hookLoginDns(appClassLoader);
+        hookLoginProxy(appClassLoader);
     }
 
     private static void hookActivityResume() {
@@ -929,6 +1107,7 @@ public final class SpotiPass {
         SpotiPassPrefs prefs = SpotiPassPrefs.getInstance(context);
         SpotiPassPrefs.Config config = prefs.getConfig();
         cachedConfig = config;
+        loggedLoginProxyKeys.clear();
         configLoaded.set(true);
     }
 
@@ -1008,6 +1187,64 @@ public final class SpotiPass {
     private static void hookLoginDns(ClassLoader cl) {
         hookInetAddressDns();
         hookOkHttpDnsSystem(cl);
+    }
+
+    private static void hookLoginProxy(ClassLoader cl) {
+        try {
+            Class<?> builderClass = XposedHelpers.findClassIfExists("okhttp3.OkHttpClient$Builder", cl);
+            if (builderClass == null) {
+                log("okhttp OkHttpClient.Builder not found");
+                return;
+            }
+
+            XC_MethodHook buildHook = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    applyLoginProxyToOkHttpBuilder(param.thisObject, cl);
+                }
+            };
+
+            int hooked = 0;
+            ArrayList<String> names = new ArrayList<>();
+            for (Method method : builderClass.getDeclaredMethods()) {
+                if (method.getParameterTypes().length != 0) continue;
+                if (!"okhttp3.OkHttpClient".equals(method.getReturnType().getName())) continue;
+                try {
+                    method.setAccessible(true);
+                    XposedBridge.hookMethod(method, buildHook);
+                    hooked++;
+                    if (names.size() < 8) names.add(method.getName());
+                } catch (Throwable ignored) {
+                }
+            }
+
+            if (hooked == 0) {
+                Class<?> okHttpClient = XposedHelpers.findClassIfExists("okhttp3.OkHttpClient", cl);
+                if (okHttpClient != null) {
+                    for (Constructor<?> constructor : okHttpClient.getDeclaredConstructors()) {
+                        Class<?>[] params = constructor.getParameterTypes();
+                        if (params.length != 1 || !builderClass.isAssignableFrom(params[0])) continue;
+                        try {
+                            constructor.setAccessible(true);
+                            XposedBridge.hookMethod(constructor, new XC_MethodHook() {
+                                @Override
+                                protected void beforeHookedMethod(MethodHookParam param) {
+                                    if (param.args == null || param.args.length == 0) return;
+                                    applyLoginProxyToOkHttpBuilder(param.args[0], cl);
+                                }
+                            });
+                            hooked++;
+                            if (names.size() < 8) names.add("<init>");
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            }
+
+            log("hook okhttp login proxy build methods: " + hooked + ", names=" + names);
+        } catch (Throwable t) {
+            log("hookLoginProxy failed: " + t);
+        }
     }
 
     private static void hookRecaptchaUrlRewrite(ClassLoader cl) {
@@ -1151,6 +1388,314 @@ public final class SpotiPass {
         }
     }
 
+    private static void applyLoginProxyToOkHttpBuilder(Object builder, ClassLoader cl) {
+        if (builder == null || cl == null) return;
+        try {
+            Class<?> builderClass = builder.getClass();
+
+            Proxy explicitProxy = readBuilderProxy(builderClass, builder);
+            if (explicitProxy != null && explicitProxy.type() != Proxy.Type.DIRECT) {
+                logLoginProxyOnce("explicitProxy|" + explicitProxy.type(),
+                        "skip login proxy injection on okhttp builder with explicit proxy: " + explicitProxy.type());
+                return;
+            }
+            if (explicitProxy != null && explicitProxy.type() == Proxy.Type.DIRECT) {
+                clearBuilderProxy(builderClass, builder);
+            }
+
+            ProxySelector existingSelector = readBuilderProxySelector(builderClass, builder);
+            if (!(existingSelector instanceof LoginProxySelector)) {
+                boolean selectorInjected = writeBuilderProxySelector(
+                        builderClass,
+                        builder,
+                        new LoginProxySelector(existingSelector)
+                );
+                if (!selectorInjected) {
+                    logLoginProxyOnce("selectorInjectionFailed",
+                            "unable to inject okhttp login ProxySelector");
+                }
+            }
+
+            Class<?> authClass = XposedHelpers.findClassIfExists("okhttp3.Authenticator", cl);
+            if (authClass == null) {
+                logLoginProxyOnce("authClassMissing", "okhttp Authenticator class not found");
+                return;
+            }
+
+            Object existingProxyAuthenticator = readBuilderProxyAuthenticator(builderClass, builder, authClass);
+            if (!isLoginProxyAuthenticator(existingProxyAuthenticator)) {
+                Object wrapper = java.lang.reflect.Proxy.newProxyInstance(
+                        cl,
+                        new Class<?>[]{authClass},
+                        new LoginProxyAuthenticatorHandler(existingProxyAuthenticator)
+                );
+                boolean authInjected = writeBuilderProxyAuthenticator(builderClass, builder, authClass, wrapper);
+                if (!authInjected) {
+                    logLoginProxyOnce("authInjectionFailed",
+                            "unable to inject okhttp proxy authenticator");
+                }
+            }
+        } catch (Throwable t) {
+            logLoginProxyOnce("applyBuilderFailed|" + t.getClass().getName(),
+                    "apply login proxy to okhttp builder failed: " + t);
+        }
+    }
+
+    private static Proxy readBuilderProxy(Class<?> builderClass, Object builder) {
+        Field field = findBestFieldByType(builderClass, Proxy.class, "proxy");
+        Object value = readField(field, builder);
+        return value instanceof Proxy ? (Proxy) value : null;
+    }
+
+    private static ProxySelector readBuilderProxySelector(Class<?> builderClass, Object builder) {
+        Field field = findBestFieldByType(builderClass, ProxySelector.class, "proxy");
+        Object value = readField(field, builder);
+        return value instanceof ProxySelector ? (ProxySelector) value : null;
+    }
+
+    private static Object readBuilderProxyAuthenticator(Class<?> builderClass, Object builder, Class<?> authClass) {
+        Field field = findBestFieldByType(builderClass, authClass, "proxy");
+        if (field != null) {
+            Object value = readField(field, builder);
+            if (value != null) return value;
+        }
+        Method setter = findBestSingleArgMethod(builderClass, authClass, "proxy");
+        if (setter != null && setter.getName().toLowerCase(Locale.US).contains("proxy")) {
+            return null;
+        }
+        return null;
+    }
+
+    private static boolean clearBuilderProxy(Class<?> builderClass, Object builder) {
+        Method setter = findBestSingleArgMethod(builderClass, Proxy.class, "proxy");
+        if (setter != null) {
+            try {
+                setter.invoke(builder, new Object[]{null});
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        Field field = findBestFieldByType(builderClass, Proxy.class, "proxy");
+        if (field != null) {
+            try {
+                field.setAccessible(true);
+                field.set(builder, null);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private static boolean writeBuilderProxySelector(Class<?> builderClass, Object builder, ProxySelector proxySelector) {
+        Method setter = findBestSingleArgMethod(builderClass, ProxySelector.class, "proxy");
+        if (setter != null) {
+            try {
+                setter.invoke(builder, proxySelector);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        Field field = findBestFieldByType(builderClass, ProxySelector.class, "proxy");
+        if (field != null) {
+            try {
+                field.setAccessible(true);
+                field.set(builder, proxySelector);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private static boolean writeBuilderProxyAuthenticator(Class<?> builderClass, Object builder, Class<?> authClass, Object proxyAuthenticator) {
+        Method setter = findBestSingleArgMethod(builderClass, authClass, "proxy");
+        if (setter != null) {
+            try {
+                setter.invoke(builder, proxyAuthenticator);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        Field field = findBestFieldByType(builderClass, authClass, "proxy");
+        if (field != null) {
+            try {
+                field.setAccessible(true);
+                field.set(builder, proxyAuthenticator);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    private static Method findBestSingleArgMethod(Class<?> type, Class<?> argType, String preferredNameToken) {
+        if (type == null || argType == null) return null;
+        ArrayList<Method> matches = new ArrayList<>();
+        for (Method method : type.getDeclaredMethods()) {
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1) continue;
+            if (params[0] != argType) continue;
+            if (!isBuilderSetterReturnType(type, method.getReturnType())) continue;
+            method.setAccessible(true);
+            matches.add(method);
+        }
+        if (matches.isEmpty()) return null;
+        if (matches.size() == 1) return matches.get(0);
+
+        String token = preferredNameToken == null ? "" : preferredNameToken.toLowerCase(Locale.US);
+        if (!token.isEmpty()) {
+            for (Method method : matches) {
+                if (method.getName().toLowerCase(Locale.US).contains(token)) {
+                    return method;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static boolean isBuilderSetterReturnType(Class<?> ownerType, Class<?> returnType) {
+        if (returnType == Void.TYPE) return true;
+        return returnType == ownerType || ownerType.isAssignableFrom(returnType);
+    }
+
+    private static Field findBestFieldByType(Class<?> type, Class<?> fieldType, String preferredNameToken) {
+        if (type == null || fieldType == null) return null;
+        ArrayList<Field> matches = new ArrayList<>();
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                if (!fieldType.isAssignableFrom(field.getType())) continue;
+                field.setAccessible(true);
+                matches.add(field);
+            }
+        }
+        if (matches.isEmpty()) return null;
+        if (matches.size() == 1) return matches.get(0);
+
+        String token = preferredNameToken == null ? "" : preferredNameToken.toLowerCase(Locale.US);
+        if (!token.isEmpty()) {
+            for (Field field : matches) {
+                if (field.getName().toLowerCase(Locale.US).contains(token)) {
+                    return field;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Object readField(Field field, Object target) {
+        if (field == null || target == null) return null;
+        try {
+            return field.get(target);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static boolean isLoginProxyAuthenticator(Object value) {
+        if (value == null) return false;
+        if (!java.lang.reflect.Proxy.isProxyClass(value.getClass())) return false;
+        try {
+            return java.lang.reflect.Proxy.getInvocationHandler(value) instanceof LoginProxyAuthenticatorHandler;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static LoginHttpProxyConfig getActiveLoginProxyConfig() {
+        Context context = currentApplication();
+        if (context == null) return null;
+        SpotiPassPrefs.Config config = getCachedConfig(context);
+        if (!config.enabled || !config.isLoginProxyMode()) return null;
+
+        String host = trimToEmpty(config.loginProxyHost);
+        if (host.isEmpty()) {
+            logLoginProxyOnce("configHostMissing", "login proxy mode enabled but proxy host is empty");
+            return null;
+        }
+
+        String rawPort = trimToEmpty(config.loginProxyPort);
+        int port = parsePort(rawPort);
+        if (port <= 0) {
+            logLoginProxyOnce("configPortInvalid|" + rawPort,
+                    "login proxy mode enabled but proxy port is invalid: " + rawPort);
+            return null;
+        }
+
+        return new LoginHttpProxyConfig(
+                host,
+                port,
+                trimToEmpty(config.loginProxyUsername),
+                config.loginProxyPassword
+        );
+    }
+
+    private static int parsePort(String rawPort) {
+        if (rawPort == null || rawPort.isEmpty()) return -1;
+        try {
+            int port = Integer.parseInt(rawPort);
+            return (port >= 1 && port <= 65535) ? port : -1;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    private static String trimToEmpty(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static void logLoginProxyOnce(String key, String message) {
+        if (key == null || key.isEmpty()) {
+            log(message);
+            return;
+        }
+        if (loggedLoginProxyKeys.add(key)) {
+            log(message);
+        }
+    }
+
+    private static Object getRequestFromResponse(Object response) {
+        if (response == null) return null;
+        try {
+            return XposedHelpers.callMethod(response, "request");
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static int extractResponseCode(Object response) {
+        if (response == null) return -1;
+        try {
+            Object code = XposedHelpers.callMethod(response, "code");
+            if (code instanceof Integer) return (Integer) code;
+        } catch (Throwable ignored) {
+        }
+        return -1;
+    }
+
+    private static String extractRequestHostFromResponse(Object response) {
+        Object request = getRequestFromResponse(response);
+        if (request == null) return null;
+        try {
+            Object httpUrl = XposedHelpers.callMethod(request, "url");
+            if (httpUrl == null) return null;
+            Object host = XposedHelpers.callMethod(httpUrl, "host");
+            return host instanceof String ? normalizeHost((String) host) : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private static String getRequestHeader(Object request, String name) {
+        if (request == null || name == null) return null;
+        try {
+            Object value = XposedHelpers.callMethod(request, "header", name);
+            return value instanceof String ? (String) value : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
     private static InetAddress[] resolveLoginDnsOverride(String host) {
         String normalizedHost = normalizeHost(host);
         if (normalizedHost == null || normalizedHost.isEmpty()) return null;
@@ -1261,6 +1806,15 @@ public final class SpotiPass {
         if (RECAPTCHA_NET_HOST.equals(host)) return true;
         if (RECAPTCHA_GOOGLE_HOST.equals(host)) return true;
         if ("www.gstatic.com".equals(host)) return true;
+        return host.startsWith("accounts-") && host.endsWith(".spotify.com");
+    }
+
+    private static boolean isSpotifyLoginProxyHost(String host) {
+        if (host == null || host.isEmpty()) return false;
+        if ("accounts.spotify.com".equals(host)) return true;
+        if ("auth-callback.spotify.com".equals(host)) return true;
+        if ("partner-accounts.spotify.com".equals(host)) return true;
+        if (CHALLENGE_HOST.equals(host)) return true;
         return host.startsWith("accounts-") && host.endsWith(".spotify.com");
     }
 

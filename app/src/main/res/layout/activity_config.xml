@@ -26,21 +26,99 @@
             android:layout_height="wrap_content"
             android:text="@string/label_enable" />
 
-        <CheckBox
-            android:id="@+id/cb_login_dns_only"
+        <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="@string/label_login_dns_only" />
+            android:layout_marginTop="@dimen/section_spacing"
+            android:text="@string/label_login_mode" />
 
-        <EditText
-            android:id="@+id/login_dns_rules_input"
+        <RadioGroup
+            android:id="@+id/rg_login_mode"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="@string/hint_login_dns_rules"
-            android:inputType="textMultiLine"
-            android:minLines="5"
-            android:maxLines="10"
-            android:layout_marginBottom="@dimen/section_spacing" />
+            android:layout_marginBottom="@dimen/section_spacing">
+
+            <RadioButton
+                android:id="@+id/rb_login_mode_none"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_mode_none" />
+
+            <RadioButton
+                android:id="@+id/rb_login_mode_dns"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_mode_dns" />
+
+            <RadioButton
+                android:id="@+id/rb_login_mode_proxy"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_mode_proxy" />
+        </RadioGroup>
+
+        <LinearLayout
+            android:id="@+id/login_dns_section"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/section_spacing"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_dns_rules" />
+
+            <EditText
+                android:id="@+id/login_dns_rules_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_login_dns_rules"
+                android:inputType="textMultiLine"
+                android:minLines="5"
+                android:maxLines="10" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/login_proxy_section"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="@dimen/section_spacing"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/label_login_proxy" />
+
+            <EditText
+                android:id="@+id/login_proxy_host_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_login_proxy_host"
+                android:inputType="textUri" />
+
+            <EditText
+                android:id="@+id/login_proxy_port_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_login_proxy_port"
+                android:inputType="number" />
+
+            <EditText
+                android:id="@+id/login_proxy_username_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_login_proxy_username"
+                android:inputType="text" />
+
+            <EditText
+                android:id="@+id/login_proxy_password_input"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/hint_login_proxy_password"
+                android:inputType="textPassword" />
+        </LinearLayout>
 
         <LinearLayout
             android:layout_width="match_parent"
