@@ -1,10 +1,19 @@
 Param(
   [string]$OutDir = "$(Split-Path -Parent $PSScriptRoot)\out",
   [string]$JavaExe,
+  [string]$NewPackage,
   [switch]$Force
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($NewPackage) {
+  throw @'
+`-NewPackage` 已禁用。
+直接让 NPatch 改包名会导致 Spotify 闪退，因为它不会像 `scripts/build_disguised.py` 那样同步处理 AndroidManifest、smali 常量和 ForegroundKeeperService 的兼容性修改。
+请先运行 `python .\scripts\build_disguised.py` 生成伪装后的 Spotify APK，再使用本脚本嵌入 SpotiPass。
+'@
+}
 
 function Select-File([string]$title, [string]$filter = "APK files (*.apk)|*.apk|All files (*.*)|*.*") {
   Add-Type -AssemblyName System.Windows.Forms
@@ -26,8 +35,8 @@ if (-not $JavaExe) {
 if (-not $JavaExe) { throw "No java.exe selected" }
 
 # --- Select Spotify APK ---
-Write-Host "Please select Spotify APK..."
-$SpotifyApk = Select-File "Select Spotify APK"
+Write-Host "Please select Spotify APK (original or disguised)..."
+$SpotifyApk = Select-File "Select Spotify APK (original or disguised)"
 if (-not $SpotifyApk) { throw "No Spotify APK selected" }
 
 # --- Select Module APK ---
@@ -56,7 +65,7 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 # On desktop JDK the default keystore type is PKCS12, causing "toDerInputStream rejects tag type 0".
 # Fix: NPatchWrapper registers BouncyCastle provider at runtime before calling NPatch.main().
 $wrapperDir = $PSScriptRoot
-$javaArgs = @("-cp", "$NPatchJar;$wrapperDir", "NPatchWrapper", "-m", $ModuleApk, "-l", "2", "-o", $OutDir)
+$javaArgs = @("-cp", "$NPatchJar;$wrapperDir", "NPatchWrapper", "-m", $ModuleApk, "-l", "3", "-o", $OutDir)
 if ($Force) { $javaArgs += "-f" }
 $javaArgs += @($SpotifyApk)
 

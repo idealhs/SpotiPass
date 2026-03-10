@@ -104,19 +104,40 @@ final class LoginProxyConnectivityTester {
 
             if (responseCode == 200) {
                 String message = buildSuccessMessage(host, port, useTlsToProxy, username, password, elapsedMs, statusLine, headers);
-                SpotiPassRuntimeLog.append("SpotiPassProxyTest: " + summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs));
+                SpotiPassRuntimeLog.append(buildRuntimeLogLine(
+                        host,
+                        port,
+                        useTlsToProxy,
+                        SpotiPassI18n.text("代理测试成功", "Proxy test succeeded"),
+                        summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs)
+                ));
                 return new Result(true, "代理隧道建立成功", message);
             }
 
             String message = buildFailureMessage(host, port, useTlsToProxy, username, password, elapsedMs,
                     "proxy returned " + statusLine, headers);
-            SpotiPassRuntimeLog.append("SpotiPassProxyTest: failed " + summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs));
+            SpotiPassRuntimeLog.append(buildRuntimeLogLine(
+                    host,
+                    port,
+                    useTlsToProxy,
+                    SpotiPassI18n.text("代理测试失败", "Proxy test failed"),
+                    summarizeForLog(host, port, useTlsToProxy, responseCode, elapsedMs)
+            ));
             return new Result(false, "代理返回非 200 响应", message);
         } catch (Throwable t) {
             long elapsedMs = elapsedMs(startedAt);
             String reason = t.getClass().getSimpleName() + (t.getMessage() == null ? "" : ": " + t.getMessage());
             String message = buildFailureMessage(host, port, useTlsToProxy, username, password, elapsedMs, reason, null);
-            SpotiPassRuntimeLog.append("SpotiPassProxyTest: failed " + proxyScheme(useTlsToProxy) + host + ":" + port + " after " + elapsedMs + " ms - " + reason);
+            SpotiPassRuntimeLog.append(buildRuntimeLogLine(
+                    host,
+                    port,
+                    useTlsToProxy,
+                    SpotiPassI18n.text("代理测试失败", "Proxy test failed"),
+                    SpotiPassI18n.text(
+                            proxyScheme(useTlsToProxy) + host + ":" + port + "，" + elapsedMs + " ms，" + reason,
+                            proxyScheme(useTlsToProxy) + host + ":" + port + ", " + elapsedMs + " ms, " + reason
+                    )
+            ));
             return new Result(false, "代理连接失败", message);
         } finally {
             if (reader != null) {
@@ -226,8 +247,18 @@ final class LoginProxyConnectivityTester {
     }
 
     private static String summarizeForLog(String host, int port, boolean useTlsToProxy, int code, long elapsedMs) {
+        if (SpotiPassI18n.isSimplifiedChinese()) {
+            return String.format(Locale.US, "%s%s:%d -> CONNECT %d，耗时 %d ms",
+                    proxyScheme(useTlsToProxy), host, port, code, elapsedMs);
+        }
         return String.format(Locale.US, "%s%s:%d -> CONNECT %d in %d ms",
                 proxyScheme(useTlsToProxy), host, port, code, elapsedMs);
+    }
+
+    private static String buildRuntimeLogLine(String host, int port, boolean useTlsToProxy, String title, String details) {
+        String prefix = SpotiPassI18n.text("SpotiPass: ", "SpotiPass: ");
+        String target = proxyScheme(useTlsToProxy) + host + ":" + port;
+        return prefix + title + " - " + target + " - " + details;
     }
 
     private static String proxyScheme(boolean useTlsToProxy) {

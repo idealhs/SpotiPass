@@ -11,6 +11,7 @@ local.properties
 
 # App build output
 /app/build
+/out/
 
 # Kotlin
 *.class
@@ -18,6 +19,10 @@ local.properties
 # Signing
 *.jks
 *.keystore
+
+# Local binary tools and downloaded APKs
+/tools/*.apk
+/tools/*.jar
 
 # Google Services (if contains API keys)
 # google-services.json

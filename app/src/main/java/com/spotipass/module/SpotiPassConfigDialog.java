@@ -132,7 +132,7 @@ final class SpotiPassConfigDialog {
         proxySection.addView(loginProxyPortInput);
 
         CheckBox loginProxyTlsBox = new CheckBox(activity);
-        loginProxyTlsBox.setText(activity.getString(R.string.label_login_proxy_tls));
+        loginProxyTlsBox.setText(text("代理服务器使用 TLS", "Use TLS for proxy server"));
         loginProxyTlsBox.setTextColor(COLOR_TEXT);
         loginProxyTlsBox.setChecked(config.loginProxyTls);
         proxySection.addView(loginProxyTlsBox);
@@ -151,7 +151,7 @@ final class SpotiPassConfigDialog {
         loginProxyPasswordInput.setText(config.loginProxyPassword);
         proxySection.addView(loginProxyPasswordInput);
 
-        Button btnTestLoginProxy = createButton(activity, activity.getString(R.string.btn_test_login_proxy), density);
+        Button btnTestLoginProxy = createButton(activity, text("测试登录代理", "Test login proxy"), density);
         proxySection.addView(btnTestLoginProxy, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         root.addView(proxySection);
@@ -217,10 +217,10 @@ final class SpotiPassConfigDialog {
         btnTestLoginProxy.setOnClickListener(v -> {
             String loginMode = radioIdToLoginMode(rbNone, rbDns, rbProxy, loginModeGroup.getCheckedRadioButtonId());
             if (!SpotiPassKeys.isLoginProxyMode(loginMode)) {
-                Toast.makeText(activity, R.string.toast_proxy_mode_required, Toast.LENGTH_SHORT).show();
+                Toast.makeText(activity, text("请先切换到登录代理模式", "Switch to login proxy mode first"), Toast.LENGTH_SHORT).show();
                 return;
             }
-            Toast.makeText(activity, R.string.toast_testing_login_proxy, Toast.LENGTH_SHORT).show();
+            Toast.makeText(activity, text("正在测试登录代理…", "Testing login proxy..."), Toast.LENGTH_SHORT).show();
             btnTestLoginProxy.setEnabled(false);
             LoginProxyConnectivityTester.testAsync(
                     loginProxyHostInput.getText().toString(),
@@ -338,11 +338,17 @@ final class SpotiPassConfigDialog {
         sv.addView(tv);
 
         new AlertDialog.Builder(activity)
-                .setTitle(result.success ? R.string.dialog_proxy_test_success : R.string.dialog_proxy_test_failed)
+                .setTitle(result.success
+                        ? text("登录代理测试成功", "Login proxy test succeeded")
+                        : text("登录代理测试失败", "Login proxy test failed"))
                 .setMessage(result.summary)
                 .setView(sv)
                 .setPositiveButton("\u5173\u95ed", null)
                 .show();
+    }
+
+    private static String text(String zhHans, String english) {
+        return SpotiPassI18n.text(zhHans, english);
     }
 
     private static LinearLayout createButtonRow(Activity activity) {

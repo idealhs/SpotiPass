@@ -218,8 +218,11 @@ public final class SpotiPass {
             try {
                 rawSocket.connect(endpoint, timeout);
                 delegateSocket = wrapProxySocketWithTls(rawSocket, config);
-                logLoginProxyOnce("proxyTls|" + config.target(),
-                        "upgrade login proxy connection to TLS for " + config.displayTarget());
+                logLoginProxyRuntimeOnce(
+                        "proxyTls|" + config.target(),
+                        "已与登录代理 " + config.displayTarget() + " 建立 TLS 连接",
+                        "established TLS connection to login proxy " + config.displayTarget()
+                );
             } catch (IOException e) {
                 try {
                     rawSocket.close();
@@ -435,8 +438,11 @@ public final class SpotiPass {
             String host = normalizeHost(uri.getHost());
             LoginHttpProxyConfig config = getActiveLoginProxyConfig();
             if (config != null && isSpotifyLoginProxyHost(host)) {
-                logLoginProxyOnce("select|" + host + "|" + config.target(),
-                        "route login host " + host + " via proxy " + config.displayTarget());
+                logLoginProxyRuntimeOnce(
+                        "select|" + host + "|" + config.target(),
+                        "登录请求 " + host + " 通过代理 " + config.displayTarget(),
+                        "login request " + host + " via proxy " + config.displayTarget()
+                );
                 return Collections.singletonList(config.proxy);
             }
             return delegateSelect(uri);
@@ -529,8 +535,11 @@ public final class SpotiPass {
                         "Proxy-Authorization",
                         config.proxyAuthorizationHeader()
                 );
-                logLoginProxyOnce("auth|" + host + "|" + config.target(),
-                        "configure proxy authentication for " + host + " via " + config.displayTarget());
+                logLoginProxyRuntimeOnce(
+                        "auth|" + host + "|" + config.target(),
+                        "已为 " + host + " 配置代理认证，经由 " + config.displayTarget(),
+                        "configured proxy authentication for " + host + " via " + config.displayTarget()
+                );
                 return XposedHelpers.callMethod(requestBuilder, "build");
             } catch (Throwable t) {
                 logLoginProxyOnce("authFailed|" + host + "|" + t.getClass().getName(),
@@ -546,6 +555,11 @@ public final class SpotiPass {
     }
 
     private static void log(String message) {
+        XposedBridge.log(TAG + ": " + message);
+    }
+
+    private static void logRuntime(String zhHans, String english) {
+        String message = SpotiPassI18n.text(zhHans, english);
         String line = TAG + ": " + message;
         XposedBridge.log(line);
         SpotiPassRuntimeLog.append(line);
@@ -867,7 +881,7 @@ public final class SpotiPass {
                 log("challenge bridge class not found: p.jk8");
                 return;
             }
-            XposedHelpers.findAndHookMethod(bridge, "r", Context.class, Uri.class, new XC_MethodHook() {
+            XC_MethodHook hook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
                     if (Boolean.TRUE.equals(challengeIntentGuard.get())) return;
@@ -903,8 +917,29 @@ public final class SpotiPass {
                     showChallengeInApp(activity, url);
                     param.setResult(null);
                 }
-            });
-            log("hook challenge bridge launch method: p.jk8.r(Context,Uri)");
+            };
+
+            int hooked = 0;
+            ArrayList<String> names = new ArrayList<>();
+            for (Method method : bridge.getDeclaredMethods()) {
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length != 2) continue;
+                if (!Context.class.isAssignableFrom(params[0])) continue;
+                if (!Uri.class.isAssignableFrom(params[1])) continue;
+                try {
+                    method.setAccessible(true);
+                    XposedBridge.hookMethod(method, hook);
+                    hooked++;
+                    if (names.size() < 8) names.add(method.getName());
+                } catch (Throwable ignored) {
+                }
+            }
+
+            if (hooked == 0) {
+                log("challenge bridge method with (Context,Uri) not found in " + bridge.getName());
+                return;
+            }
+            log("hook challenge bridge launch methods: " + hooked + ", names=" + names);
         } catch (Throwable t) {
             log("hookChallengeBridgeLaunch failed: " + t);
         }
@@ -1769,14 +1804,14 @@ public final class SpotiPass {
     }
 
     private static Object readBuilderProxyAuthenticator(Class<?> builderClass, Object builder, Class<?> authClass) {
-        Field field = findBestFieldByType(builderClass, authClass, "proxy");
-        if (field != null) {
+        ArrayList<Field> fields = findAllFieldsByType(builderClass, authClass);
+        for (Field field : fields) {
+            Object value = readField(field, builder);
+            if (isLoginProxyAuthenticator(value)) return value;
+        }
+        for (Field field : fields) {
             Object value = readField(field, builder);
             if (value != null) return value;
-        }
-        Method setter = findBestSingleArgMethod(builderClass, authClass, "proxy");
-        if (setter != null && setter.getName().toLowerCase(Locale.US).contains("proxy")) {
-            return null;
         }
         return null;
     }
@@ -1845,37 +1880,38 @@ public final class SpotiPass {
     }
 
     private static boolean writeBuilderProxyAuthenticator(Class<?> builderClass, Object builder, Class<?> authClass, Object proxyAuthenticator) {
-        Method setter = findBestSingleArgMethod(builderClass, authClass, "proxy");
-        if (setter != null) {
+        boolean wrote = false;
+
+        ArrayList<Method> methods = findPreferredSingleArgMethods(builderClass, authClass, "proxy");
+        if (methods.isEmpty()) {
+            methods = findAllSingleArgMethods(builderClass, authClass);
+        }
+        for (Method setter : methods) {
             try {
                 setter.invoke(builder, proxyAuthenticator);
-                return true;
+                wrote = true;
             } catch (Throwable ignored) {
             }
         }
-        Field field = findBestFieldByType(builderClass, authClass, "proxy");
-        if (field != null) {
+
+        ArrayList<Field> fields = findPreferredFieldsByType(builderClass, authClass, "proxy");
+        if (fields.isEmpty()) {
+            fields = findAllFieldsByType(builderClass, authClass);
+        }
+        for (Field field : fields) {
             try {
                 field.setAccessible(true);
                 field.set(builder, proxyAuthenticator);
-                return true;
+                wrote = true;
             } catch (Throwable ignored) {
             }
         }
-        return false;
+        return wrote;
     }
 
     private static Method findBestSingleArgMethod(Class<?> type, Class<?> argType, String preferredNameToken) {
         if (type == null || argType == null) return null;
-        ArrayList<Method> matches = new ArrayList<>();
-        for (Method method : type.getDeclaredMethods()) {
-            Class<?>[] params = method.getParameterTypes();
-            if (params.length != 1) continue;
-            if (params[0] != argType) continue;
-            if (!isBuilderSetterReturnType(type, method.getReturnType())) continue;
-            method.setAccessible(true);
-            matches.add(method);
-        }
+        ArrayList<Method> matches = findAllSingleArgMethods(type, argType);
         if (matches.isEmpty()) return null;
         if (matches.size() == 1) return matches.get(0);
 
@@ -1890,6 +1926,36 @@ public final class SpotiPass {
         return null;
     }
 
+    private static ArrayList<Method> findAllSingleArgMethods(Class<?> type, Class<?> argType) {
+        ArrayList<Method> matches = new ArrayList<>();
+        if (type == null || argType == null) return matches;
+        for (Method method : type.getDeclaredMethods()) {
+            Class<?>[] params = method.getParameterTypes();
+            if (params.length != 1) continue;
+            if (params[0] != argType) continue;
+            if (!isBuilderSetterReturnType(type, method.getReturnType())) continue;
+            method.setAccessible(true);
+            matches.add(method);
+        }
+        return matches;
+    }
+
+    private static ArrayList<Method> findPreferredSingleArgMethods(Class<?> type, Class<?> argType, String preferredNameToken) {
+        ArrayList<Method> matches = findAllSingleArgMethods(type, argType);
+        if (matches.isEmpty()) return matches;
+
+        String token = preferredNameToken == null ? "" : preferredNameToken.toLowerCase(Locale.US);
+        if (token.isEmpty()) return matches;
+
+        ArrayList<Method> preferred = new ArrayList<>();
+        for (Method method : matches) {
+            if (method.getName().toLowerCase(Locale.US).contains(token)) {
+                preferred.add(method);
+            }
+        }
+        return preferred.isEmpty() ? matches : preferred;
+    }
+
     private static boolean isBuilderSetterReturnType(Class<?> ownerType, Class<?> returnType) {
         if (returnType == Void.TYPE) return true;
         return returnType == ownerType || ownerType.isAssignableFrom(returnType);
@@ -1897,14 +1963,7 @@ public final class SpotiPass {
 
     private static Field findBestFieldByType(Class<?> type, Class<?> fieldType, String preferredNameToken) {
         if (type == null || fieldType == null) return null;
-        ArrayList<Field> matches = new ArrayList<>();
-        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
-            for (Field field : current.getDeclaredFields()) {
-                if (!fieldType.isAssignableFrom(field.getType())) continue;
-                field.setAccessible(true);
-                matches.add(field);
-            }
-        }
+        ArrayList<Field> matches = findAllFieldsByType(type, fieldType);
         if (matches.isEmpty()) return null;
         if (matches.size() == 1) return matches.get(0);
 
@@ -1917,6 +1976,35 @@ public final class SpotiPass {
             }
         }
         return null;
+    }
+
+    private static ArrayList<Field> findAllFieldsByType(Class<?> type, Class<?> fieldType) {
+        ArrayList<Field> matches = new ArrayList<>();
+        if (type == null || fieldType == null) return matches;
+        for (Class<?> current = type; current != null && current != Object.class; current = current.getSuperclass()) {
+            for (Field field : current.getDeclaredFields()) {
+                if (!fieldType.isAssignableFrom(field.getType())) continue;
+                field.setAccessible(true);
+                matches.add(field);
+            }
+        }
+        return matches;
+    }
+
+    private static ArrayList<Field> findPreferredFieldsByType(Class<?> type, Class<?> fieldType, String preferredNameToken) {
+        ArrayList<Field> matches = findAllFieldsByType(type, fieldType);
+        if (matches.isEmpty()) return matches;
+
+        String token = preferredNameToken == null ? "" : preferredNameToken.toLowerCase(Locale.US);
+        if (token.isEmpty()) return matches;
+
+        ArrayList<Field> preferred = new ArrayList<>();
+        for (Field field : matches) {
+            if (field.getName().toLowerCase(Locale.US).contains(token)) {
+                preferred.add(field);
+            }
+        }
+        return preferred.isEmpty() ? matches : preferred;
     }
 
     private static Field findBestExactFieldByType(Class<?> type, Class<?> fieldType, String preferredNameToken) {
@@ -2055,6 +2143,16 @@ public final class SpotiPass {
         }
     }
 
+    private static void logLoginProxyRuntimeOnce(String key, String zhHans, String english) {
+        if (key == null || key.isEmpty()) {
+            logRuntime(zhHans, english);
+            return;
+        }
+        if (loggedLoginProxyKeys.add(key)) {
+            logRuntime(zhHans, english);
+        }
+    }
+
     private static Object getRequestFromResponse(Object response) {
         if (response == null) return null;
         try {
@@ -2120,7 +2218,10 @@ public final class SpotiPass {
         }
         if (result.isEmpty()) return null;
         if (loggedDnsHosts.add(normalizedHost)) {
-            log("DNS override " + normalizedHost + " -> " + result);
+            logRuntime(
+                    "DNS 覆写 " + normalizedHost + " -> " + result,
+                    "DNS override " + normalizedHost + " -> " + result
+            );
         }
         return result.toArray(new InetAddress[0]);
     }
@@ -2280,7 +2381,10 @@ public final class SpotiPass {
         int q = key.indexOf('?');
         if (q >= 0) key = key.substring(0, q);
         if (loggedRecaptchaRewritePaths.add(key)) {
-            log("rewrite recaptcha URL " + original + " -> " + rewritten);
+            logRuntime(
+                    "reCAPTCHA 请求改写 " + original + " -> " + rewritten,
+                    "rewrote reCAPTCHA URL " + original + " -> " + rewritten
+            );
         }
     }
 
